@@ -1,0 +1,796 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DLP Screen Analyzer</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #0f1117; --surface: #1a1d27; --surface2: #22263a;
+      --border: #2e3350; --accent: #4f6ef7; --accent2: #7c3aed;
+      --danger: #ef4444; --warn: #f59e0b; --ok: #22c55e;
+      --text: #e2e8f0; --muted: #64748b; --radius: 10px;
+    }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; }
+
+    /* Header */
+    header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 14px 28px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 100; }
+    .logo { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 1.1rem; }
+    .logo-icon { width: 36px; height: 36px; border-radius: 8px; background: linear-gradient(135deg, var(--accent), var(--accent2)); display: flex; align-items: center; justify-content: center; font-size: 18px; }
+    .badge { font-size: 11px; padding: 3px 10px; border-radius: 20px; background: rgba(79,110,247,.15); color: var(--accent); border: 1px solid rgba(79,110,247,.3); }
+    .header-right { display: flex; align-items: center; gap: 14px; }
+    .api-status { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+    .dot.ok { background: var(--ok); box-shadow: 0 0 6px var(--ok); animation: pulse 2s infinite; }
+    .dot.err { background: var(--danger); }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+    /* Layout */
+    .layout { display: flex; flex: 1; }
+    nav { width: 220px; min-width: 220px; background: var(--surface); border-right: 1px solid var(--border); padding: 20px 0; display: flex; flex-direction: column; gap: 4px; }
+    .nav-item { display: flex; align-items: center; gap: 10px; padding: 10px 20px; cursor: pointer; font-size: 14px; color: var(--muted); border-left: 3px solid transparent; transition: all .2s; }
+    .nav-item:hover { color: var(--text); background: rgba(255,255,255,.04); }
+    .nav-item.active { color: var(--accent); border-left-color: var(--accent); background: rgba(79,110,247,.08); }
+    .nav-icon { font-size: 16px; width: 20px; text-align: center; }
+    .nav-sep { height: 1px; background: var(--border); margin: 10px 20px; }
+    main { flex: 1; padding: 28px; overflow-y: auto; }
+    .page { display: none; }
+    .page.active { display: block; }
+
+    .page-title { font-size: 1.4rem; font-weight: 700; margin-bottom: 6px; }
+    .page-sub { color: var(--muted); font-size: 14px; margin-bottom: 24px; }
+
+    /* Stats */
+    .stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; margin-bottom: 28px; }
+    .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; position: relative; overflow: hidden; }
+    .stat-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px; }
+    .stat-card.danger::before { background: var(--danger); }
+    .stat-card.warn::before   { background: var(--warn); }
+    .stat-card.ok::before     { background: var(--ok); }
+    .stat-card.info::before   { background: var(--accent); }
+    .stat-label { font-size: 12px; color: var(--muted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: .5px; }
+    .stat-value { font-size: 2rem; font-weight: 700; line-height: 1; }
+    .stat-value.danger { color: var(--danger); }
+    .stat-value.warn   { color: var(--warn); }
+    .stat-value.ok     { color: var(--ok); }
+    .stat-value.info   { color: var(--accent); }
+    .stat-delta { font-size: 12px; margin-top: 6px; color: var(--muted); }
+
+    /* Cards */
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 20px; }
+    .card-title { font-size: 14px; font-weight: 600; margin-bottom: 16px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    @media(max-width:900px){ .two-col { grid-template-columns: 1fr; } }
+
+    /* Bars */
+    .bar-row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; font-size: 13px; }
+    .bar-label { width: 160px; flex-shrink: 0; }
+    .bar-track { flex: 1; background: var(--surface2); border-radius: 4px; height: 8px; overflow: hidden; }
+    .bar-fill { height: 100%; border-radius: 4px; transition: width 1s ease; }
+    .bar-count { width: 60px; text-align: right; color: var(--muted); font-size: 12px; }
+
+    /* Table */
+    .tbl-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { text-align: left; padding: 10px 14px; color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; border-bottom: 1px solid var(--border); }
+    td { padding: 12px 14px; border-bottom: 1px solid rgba(46,51,80,.5); vertical-align: middle; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(255,255,255,.025); }
+    .empty-row { text-align: center; color: var(--muted); padding: 32px; font-size: 13px; }
+
+    /* Pills */
+    .pill { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+    .pill.high { background: rgba(239,68,68,.15); color: #fca5a5; border: 1px solid rgba(239,68,68,.3); }
+    .pill.med  { background: rgba(245,158,11,.15); color: #fcd34d; border: 1px solid rgba(245,158,11,.3); }
+    .pill.low  { background: rgba(34,197,94,.15);  color: #86efac; border: 1px solid rgba(34,197,94,.3); }
+
+    /* Mini chart */
+    .mini-bars { display: flex; align-items: flex-end; gap: 4px; height: 70px; }
+    .mini-bar { flex: 1; border-radius: 3px 3px 0 0; background: var(--accent); opacity: .65; transition: opacity .2s; cursor: pointer; min-height: 2px; }
+    .mini-bar:hover { opacity: 1; }
+    .mini-bar.danger { background: var(--danger); }
+    .chart-labels { display: flex; gap: 4px; margin-top: 4px; font-size: 10px; color: var(--muted); }
+    .chart-labels span { flex: 1; text-align: center; }
+
+    /* Timeline */
+    .tl-item { display: flex; gap: 14px; margin-bottom: 16px; }
+    .tl-dot-wrap { display: flex; flex-direction: column; align-items: center; }
+    .tl-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; margin-top: 3px; }
+    .tl-line { flex: 1; width: 1px; background: var(--border); margin-top: 4px; }
+    .tl-title { font-size: 13px; font-weight: 600; }
+    .tl-meta  { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+    /* Analysis page */
+    .run-btn {
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      color: #fff; border: none; padding: 12px 28px;
+      border-radius: var(--radius); font-size: 14px; font-weight: 600;
+      cursor: pointer; transition: opacity .2s; margin-right: 10px;
+    }
+    .run-btn:disabled { opacity: .45; cursor: not-allowed; }
+    .stop-btn {
+      background: transparent; color: var(--danger); border: 1px solid var(--danger);
+      padding: 11px 22px; border-radius: var(--radius); font-size: 14px;
+      font-weight: 600; cursor: pointer; display: none;
+    }
+    .progress-wrap { margin-top: 20px; }
+    .progress-track { background: var(--surface2); border-radius: 4px; height: 10px; overflow: hidden; margin: 8px 0; }
+    .progress-bar { height: 100%; border-radius: 4px; background: linear-gradient(90deg, var(--accent), var(--accent2)); width: 0%; transition: width .4s; }
+    .progress-label { font-size: 13px; }
+    .progress-sub   { font-size: 12px; color: var(--muted); }
+    .log-box {
+      background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 14px; margin-top: 16px; font-family: monospace; font-size: 12px;
+      max-height: 280px; overflow-y: auto; color: #94a3b8; line-height: 1.8;
+    }
+    .log-ok   { color: var(--ok); }
+    .log-warn { color: var(--warn); }
+    .log-err  { color: var(--danger); }
+    .log-info { color: var(--accent); }
+
+    /* Settings */
+    .form-row { margin-bottom: 18px; }
+    label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: .5px; }
+    input[type=text], select, textarea { width: 100%; background: var(--surface2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 9px 12px; font-size: 13px; outline: none; transition: border-color .2s; }
+    input:focus, select:focus { border-color: var(--accent); }
+    .toggle-row { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid var(--border); }
+    .toggle-row:last-child { border: none; }
+    .toggle-label { font-size: 13px; }
+    .toggle-sub   { font-size: 11px; color: var(--muted); }
+    .switch { position: relative; width: 40px; height: 22px; flex-shrink: 0; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider { position: absolute; inset: 0; background: var(--surface2); border-radius: 22px; cursor: pointer; transition: .3s; border: 1px solid var(--border); }
+    .slider::before { content: ''; position: absolute; width: 16px; height: 16px; left: 2px; bottom: 2px; background: var(--muted); border-radius: 50%; transition: .3s; }
+    input:checked + .slider { background: var(--accent); border-color: var(--accent); }
+    input:checked + .slider::before { transform: translateX(18px); background: #fff; }
+    .save-btn { background: var(--accent); color: #fff; border: none; padding: 10px 24px; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; margin-top: 8px; }
+
+    /* Filters */
+    .filters { display: flex; gap: 10px; margin-bottom: 18px; flex-wrap: wrap; }
+    .filters select { width: auto; min-width: 160px; }
+
+    /* Info box */
+    .info-box { background: rgba(79,110,247,.08); border: 1px solid rgba(79,110,247,.25); border-radius: 8px; padding: 14px 18px; font-size: 13px; color: var(--muted); margin-bottom: 20px; }
+    .info-box span { color: var(--accent); font-weight: 600; }
+
+    @media(max-width:700px){
+      nav { width: 56px; min-width: 56px; }
+      .nav-item span { display: none; }
+      .nav-item { padding: 12px; justify-content: center; }
+    }
+
+    /* Image preview modal */
+    .modal-overlay {
+      display: none; position: fixed; inset: 0; z-index: 1000;
+      background: rgba(0,0,0,.85); backdrop-filter: blur(4px);
+      align-items: center; justify-content: center;
+    }
+    .modal-overlay.open { display: flex; }
+    .modal-box {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); max-width: 92vw; max-height: 92vh;
+      display: flex; flex-direction: column; overflow: hidden;
+      box-shadow: 0 24px 80px rgba(0,0,0,.7);
+    }
+    .modal-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 18px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+    }
+    .modal-title { font-size: 13px; font-weight: 600; color: var(--text); word-break: break-all; }
+    .modal-meta  { font-size: 11px; color: var(--muted); margin-top: 2px; }
+    .modal-close {
+      width: 32px; height: 32px; border-radius: 6px; border: 1px solid var(--border);
+      background: transparent; color: var(--muted); cursor: pointer; font-size: 18px;
+      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+      transition: all .15s;
+    }
+    .modal-close:hover { background: var(--surface2); color: var(--text); }
+    .modal-img-wrap {
+      overflow: auto; display: flex; align-items: flex-start; justify-content: center;
+      padding: 16px; flex: 1; min-height: 0;
+    }
+    .modal-img-wrap img { max-width: 100%; border-radius: 6px; display: block; }
+    .modal-footer {
+      padding: 12px 18px; border-top: 1px solid var(--border); flex-shrink: 0;
+      display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+    }
+    .modal-incidents { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; }
+
+    .view-btn {
+      background: transparent; border: 1px solid var(--border); color: var(--accent);
+      padding: 3px 10px; border-radius: 5px; font-size: 11px; cursor: pointer;
+      transition: all .15s; white-space: nowrap;
+    }
+    .view-btn:hover { background: rgba(79,110,247,.12); border-color: var(--accent); }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-icon">🛡</div>
+    <span>DLP Screen Analyzer</span>
+    <span class="badge">v1.0</span>
+  </div>
+  <div class="header-right">
+    <div class="api-status">
+      <div class="dot" id="api-dot"></div>
+      <span id="api-label">Подключение...</span>
+    </div>
+  </div>
+</header>
+
+<div class="layout">
+  <nav>
+    <div class="nav-item active" onclick="show('dashboard',this)"><span class="nav-icon">📊</span><span>Дашборд</span></div>
+    <div class="nav-item" onclick="show('incidents',this)"><span class="nav-icon">🚨</span><span>Инциденты</span></div>
+    <div class="nav-item" onclick="show('analyze',this)"><span class="nav-icon">🔍</span><span>Анализ</span></div>
+    <div class="nav-item" onclick="show('employees',this)"><span class="nav-icon">👥</span><span>Сотрудники</span></div>
+    <div class="nav-sep"></div>
+    <div class="nav-item" onclick="show('settings',this)"><span class="nav-icon">⚙️</span><span>Настройки</span></div>
+  </nav>
+
+  <main>
+
+    <!-- ═══ DASHBOARD ═══ -->
+    <div class="page active" id="page-dashboard">
+      <div class="page-title">Обзор системы</div>
+      <div class="page-sub" id="dash-updated">Загрузка данных...</div>
+
+      <div class="stats">
+        <div class="stat-card info">
+          <div class="stat-label">Обработано скринов</div>
+          <div class="stat-value info" id="s-total">—</div>
+          <div class="stat-delta">из папки input/</div>
+        </div>
+        <div class="stat-card danger">
+          <div class="stat-label">Критических инцидентов</div>
+          <div class="stat-value danger" id="s-high">—</div>
+          <div class="stat-delta">требуют немедленной реакции</div>
+        </div>
+        <div class="stat-card warn">
+          <div class="stat-label">Средних / Низких</div>
+          <div class="stat-value warn" id="s-med">—</div>
+          <div class="stat-delta">требуют проверки</div>
+        </div>
+        <div class="stat-card ok">
+          <div class="stat-label">Чистых скринов</div>
+          <div class="stat-value ok" id="s-clean">—</div>
+          <div class="stat-delta">нарушений не обнаружено</div>
+        </div>
+      </div>
+
+      <div class="two-col">
+        <div class="card">
+          <div class="card-title">Типы нарушений</div>
+          <div id="violation-bars"><div style="color:var(--muted);font-size:13px">Нет данных. Запустите анализ.</div></div>
+        </div>
+        <div class="card">
+          <div class="card-title">Активность по часам (сегодня)</div>
+          <div class="mini-bars" id="hourly-chart"></div>
+          <div class="chart-labels" id="hourly-labels"></div>
+          <div id="hourly-note" style="margin-top:12px;font-size:12px;color:var(--muted)"></div>
+        </div>
+      </div>
+
+      <div class="two-col">
+        <div class="card">
+          <div class="card-title">Последние инциденты</div>
+          <div id="tl-feed"><div style="color:var(--muted);font-size:13px">Нет данных.</div></div>
+        </div>
+        <div class="card">
+          <div class="card-title">Топ сотрудников по рискам</div>
+          <div class="tbl-wrap">
+            <table>
+              <thead><tr><th>Сотрудник</th><th>Критич.</th><th>Средних</th><th>Оценка</th></tr></thead>
+              <tbody id="top-emp-body"><tr><td class="empty-row" colspan="4">Нет данных</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ INCIDENTS ═══ -->
+    <div class="page" id="page-incidents">
+      <div class="page-title">Журнал инцидентов</div>
+      <div class="page-sub">Все обнаруженные нарушения политики безопасности</div>
+      <div class="filters">
+        <select id="sev-filter" onchange="loadIncidents()">
+          <option value="">Все уровни</option>
+          <option value="Критический">Критический</option>
+          <option value="Средний">Средний</option>
+          <option value="Низкий">Низкий</option>
+        </select>
+        <select id="type-filter" onchange="loadIncidents()">
+          <option value="">Все типы</option>
+          <option value="Банковская карта">Банковская карта</option>
+          <option value="СНИЛС">СНИЛС</option>
+          <option value="Паспорт РФ">Паспорт РФ</option>
+          <option value="Пароль / секрет">Пароль / секрет</option>
+          <option value="API-ключ">API-ключ</option>
+          <option value="ИНН">ИНН</option>
+          <option value="Email (личный домен)">Email (личный домен)</option>
+          <option value="Мессенджер / соцсеть">Мессенджер / соцсеть</option>
+          <option value="Внешний носитель">Внешний носитель</option>
+        </select>
+      </div>
+      <div class="card">
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>#</th><th>Время</th><th>Сотрудник</th><th>Тип нарушения</th><th>Уровень</th><th>Файл</th><th>Детали</th><th>Просмотр</th></tr></thead>
+            <tbody id="incidents-body"><tr><td class="empty-row" colspan="8">Загрузка...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ ANALYZE ═══ -->
+    <div class="page" id="page-analyze">
+      <div class="page-title">Анализ скриншотов</div>
+      <div class="page-sub">Локальный пайплайн: OCR (Tesseract) + regex-паттерны + SQLite</div>
+
+      <div id="input-info" class="info-box">Загрузка информации о папке...</div>
+      <div id="tess-warn" style="display:none;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:8px;padding:14px 18px;font-size:13px;margin-bottom:20px;color:#fca5a5">
+        <b>Tesseract не установлен</b> — OCR работать не будет.<br/>
+        Установите в терминале:<br/>
+        <code style="display:block;margin-top:8px;padding:8px;background:var(--bg);border-radius:4px;font-size:12px">/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"<br/>brew install tesseract tesseract-lang</code>
+      </div>
+
+      <div class="two-col">
+        <div class="card">
+          <div class="card-title">Управление</div>
+          <button class="run-btn" id="start-btn" onclick="startAnalysis()">▶ Запустить анализ</button>
+          <button class="stop-btn" id="stop-btn" onclick="stopAnalysis()">◼ Остановить</button>
+
+          <div class="progress-wrap" id="progress-wrap" style="display:none">
+            <div class="progress-label" id="p-label">Инициализация...</div>
+            <div class="progress-track"><div class="progress-bar" id="p-bar"></div></div>
+            <div class="progress-sub" id="p-sub"></div>
+          </div>
+
+          <div style="margin-top:20px;display:flex;gap:10px;align-items:center">
+            <button onclick="clearData()" style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:8px 16px;border-radius:6px;font-size:13px;cursor:pointer">Очистить базу</button>
+            <span style="font-size:12px;color:var(--muted)">Удаляет все результаты из БД</span>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Статистика текущего прогона</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px" id="run-stats">
+            <div style="font-size:13px;color:var(--muted)">Запустите анализ</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Лог обработки</div>
+        <div class="log-box" id="log-box"><span style="color:var(--muted)">Лог появится после запуска...</span></div>
+      </div>
+    </div>
+
+    <!-- ═══ EMPLOYEES ═══ -->
+    <div class="page" id="page-employees">
+      <div class="page-title">Профили сотрудников</div>
+      <div class="page-sub">Риск-оценка по данным анализа. Имена извлекаются из имён файлов скриншотов.</div>
+      <div class="card">
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Сотрудник</th><th>Скринов с инц.</th><th>Критических</th><th>Средних</th><th>Последний инц.</th><th>Риск-оценка</th></tr></thead>
+            <tbody id="emp-body"><tr><td class="empty-row" colspan="6">Загрузка...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ SETTINGS ═══ -->
+    <div class="page" id="page-settings">
+      <div class="page-title">Настройки</div>
+      <div class="page-sub">Конфигурация хранится в backend/main.py и backend/analyzer.py</div>
+      <div class="two-col">
+        <div class="card">
+          <div class="card-title">Активные детекторы</div>
+          <div class="toggle-row"><div><div class="toggle-label">Банковская карта</div><div class="toggle-sub">16-значные номера</div></div><label class="switch"><input type="checkbox" checked><span class="slider"></span></label></div>
+          <div class="toggle-row"><div><div class="toggle-label">СНИЛС</div><div class="toggle-sub">ФорматXXX-XXX-XXX XX</div></div><label class="switch"><input type="checkbox" checked><span class="slider"></span></label></div>
+          <div class="toggle-row"><div><div class="toggle-label">Паспорт РФ</div><div class="toggle-sub">Серия XXXX Номер XXXXXX</div></div><label class="switch"><input type="checkbox" checked><span class="slider"></span></label></div>
+          <div class="toggle-row"><div><div class="toggle-label">Пароли / токены</div><div class="toggle-sub">password=, token= и пр.</div></div><label class="switch"><input type="checkbox" checked><span class="slider"></span></label></div>
+          <div class="toggle-row"><div><div class="toggle-label">API-ключи</div><div class="toggle-sub">bearer, api_key и пр.</div></div><label class="switch"><input type="checkbox" checked><span class="slider"></span></label></div>
+          <div class="toggle-row"><div><div class="toggle-label">Личные email</div><div class="toggle-sub">gmail, mail.ru, yandex...</div></div><label class="switch"><input type="checkbox" checked><span class="slider"></span></label></div>
+          <div class="toggle-row"><div><div class="toggle-label">Мессенджеры</div><div class="toggle-sub">Telegram, WhatsApp, VK...</div></div><label class="switch"><input type="checkbox" checked><span class="slider"></span></label></div>
+          <div class="toggle-row"><div><div class="toggle-label">Внешние носители</div><div class="toggle-sub">USB, removable disk</div></div><label class="switch"><input type="checkbox" checked><span class="slider"></span></label></div>
+        </div>
+        <div class="card">
+          <div class="card-title">Параметры OCR</div>
+          <div class="form-row">
+            <label>Язык OCR</label>
+            <select><option selected>rus+eng (русский + английский)</option><option>rus</option><option>eng</option></select>
+          </div>
+          <div class="form-row">
+            <label>Параллельных потоков</label>
+            <select><option>4</option><option selected>8</option><option>16</option></select>
+          </div>
+          <div class="form-row">
+            <label>Папка со скриншотами</label>
+            <input type="text" id="input-folder-display" readonly />
+          </div>
+          <div style="margin-top:12px;padding:12px;background:var(--surface2);border-radius:6px;font-size:12px;color:var(--muted)">
+            Для изменения параметров редактируйте<br/>
+            <span style="color:var(--accent)">backend/main.py</span> и перезапустите сервер.
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<!-- ═══ IMAGE PREVIEW MODAL ═══ -->
+<div class="modal-overlay" id="preview-modal" onclick="closePreview(event)">
+  <div class="modal-box">
+    <div class="modal-header">
+      <div>
+        <div class="modal-title" id="modal-filename"></div>
+        <div class="modal-meta" id="modal-meta"></div>
+      </div>
+      <button class="modal-close" onclick="closePreview()">&times;</button>
+    </div>
+    <div class="modal-img-wrap">
+      <img id="modal-img" src="" alt="preview" />
+    </div>
+    <div class="modal-footer">
+      <div class="modal-incidents" id="modal-incidents"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = 'http://127.0.0.1:8000';
+let pollTimer = null;
+let logOffset = 0;
+
+/* ── Navigation ── */
+function show(page, el) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById('page-' + page).classList.add('active');
+  if (el) el.classList.add('active');
+  if (page === 'incidents')  loadIncidents();
+  if (page === 'employees')  loadEmployees();
+  if (page === 'dashboard')  loadDashboard();
+}
+
+/* ── API health ── */
+async function checkApi() {
+  try {
+    const r = await fetch(API + '/api/stats', { signal: AbortSignal.timeout(3000) });
+    if (r.ok) {
+      document.getElementById('api-dot').className = 'dot ok';
+      document.getElementById('api-label').textContent = 'Сервер работает • Офлайн';
+      return true;
+    }
+  } catch {}
+  document.getElementById('api-dot').className = 'dot err';
+  document.getElementById('api-label').textContent = 'Сервер недоступен';
+  return false;
+}
+
+/* ── Dashboard ── */
+async function loadDashboard() {
+  try {
+    const [stats, types, hourly, emps, incs] = await Promise.all([
+      fetch(API + '/api/stats').then(r => r.json()),
+      fetch(API + '/api/violation_types').then(r => r.json()),
+      fetch(API + '/api/hourly').then(r => r.json()),
+      fetch(API + '/api/employees').then(r => r.json()),
+      fetch(API + '/api/incidents?limit=5').then(r => r.json()),
+    ]);
+
+    document.getElementById('s-total').textContent  = stats.total.toLocaleString('ru');
+    document.getElementById('s-high').textContent   = stats.high.toLocaleString('ru');
+    document.getElementById('s-med').textContent    = (stats.medium + stats.low).toLocaleString('ru');
+    document.getElementById('s-clean').textContent  = stats.clean.toLocaleString('ru');
+    document.getElementById('dash-updated').textContent = 'Обновлено: ' + new Date().toLocaleTimeString('ru');
+
+    buildViolationBars(types);
+    buildHourlyChart(hourly);
+    buildTimeline(incs);
+    buildTopEmp(emps);
+  } catch (e) {
+    document.getElementById('dash-updated').textContent = 'Ошибка загрузки данных';
+  }
+}
+
+function buildViolationBars(types) {
+  const el = document.getElementById('violation-bars');
+  if (!types.length) { el.innerHTML = '<div style="color:var(--muted);font-size:13px">Нет данных. Запустите анализ.</div>'; return; }
+  const max = Math.max(...types.map(t => t.cnt));
+  const colors = { 'Критический': 'var(--danger)', 'Средний': 'var(--warn)', 'Низкий': 'var(--ok)' };
+  el.innerHTML = types.slice(0, 8).map(t => `
+    <div class="bar-row">
+      <span class="bar-label">${t.violation_type}</span>
+      <div class="bar-track"><div class="bar-fill" style="width:${Math.round(t.cnt/max*100)}%;background:var(--accent)"></div></div>
+      <span class="bar-count">${t.cnt}</span>
+    </div>`).join('');
+}
+
+function buildHourlyChart(hourly) {
+  const chart  = document.getElementById('hourly-chart');
+  const labels = document.getElementById('hourly-labels');
+  chart.innerHTML = ''; labels.innerHTML = '';
+  const max = Math.max(1, ...hourly.map(h => h.count));
+  let total = 0, peakHour = '—', peakVal = 0;
+  hourly.forEach(h => {
+    total += h.count;
+    if (h.count > peakVal) { peakVal = h.count; peakHour = h.hour + ':00'; }
+    const b = document.createElement('div');
+    b.className = 'mini-bar' + (h.count > max * 0.6 ? ' danger' : '');
+    b.style.height = (h.count / max * 100) + '%';
+    b.title = `${h.hour}:00 — ${h.count} инц.`;
+    chart.appendChild(b);
+    const l = document.createElement('span');
+    l.textContent = parseInt(h.hour) % 4 === 0 ? h.hour : '';
+    labels.appendChild(l);
+  });
+  document.getElementById('hourly-note').innerHTML =
+    total > 0
+      ? `Всего сегодня: <span style="color:var(--text)">${total}</span> &nbsp;|&nbsp; Пик: <span style="color:var(--warn)">${peakHour}</span>`
+      : 'Инцидентов сегодня нет';
+}
+
+function buildTimeline(incs) {
+  const el = document.getElementById('tl-feed');
+  if (!incs.length) { el.innerHTML = '<div style="color:var(--muted);font-size:13px">Нет данных. Запустите анализ.</div>'; return; }
+  const colors = { Критический: 'var(--danger)', Средний: 'var(--warn)', Низкий: 'var(--ok)' };
+  el.innerHTML = incs.map((inc, i) => `
+    <div class="tl-item">
+      <div class="tl-dot-wrap">
+        <div class="tl-dot" style="background:${colors[inc.severity] || 'var(--muted)'}"></div>
+        ${i < incs.length - 1 ? '<div class="tl-line"></div>' : ''}
+      </div>
+      <div class="tl-body">
+        <div class="tl-title">${inc.employee} — ${inc.violation_type}</div>
+        <div class="tl-meta">${inc.detected_at || ''} • ${inc.detail || ''}</div>
+      </div>
+    </div>`).join('');
+}
+
+function buildTopEmp(emps) {
+  const tbody = document.getElementById('top-emp-body');
+  if (!emps.length) { tbody.innerHTML = '<tr><td class="empty-row" colspan="4">Нет данных</td></tr>'; return; }
+  tbody.innerHTML = emps.slice(0, 5).map(e => {
+    const c = e.risk_score > 50 ? 'var(--danger)' : e.risk_score > 20 ? 'var(--warn)' : 'var(--ok)';
+    return `<tr>
+      <td>${e.employee}</td>
+      <td style="color:var(--danger)">${e.high_count}</td>
+      <td style="color:var(--warn)">${e.med_count}</td>
+      <td style="color:${c};font-weight:700">${e.risk_score}</td>
+    </tr>`;
+  }).join('');
+}
+
+/* ── Incidents ── */
+async function loadIncidents() {
+  const sev  = document.getElementById('sev-filter').value;
+  const type = document.getElementById('type-filter').value;
+  const params = new URLSearchParams();
+  if (sev)  params.set('severity', sev);
+  if (type) params.set('type', type);
+  try {
+    const data = await fetch(API + '/api/incidents?' + params).then(r => r.json());
+    // Build per-file incident cache for modal
+    _incByFile = {};
+    data.forEach(inc => {
+      if (!inc.filename) return;
+      (_incByFile[inc.filename] = _incByFile[inc.filename] || []).push(inc);
+    });
+    const tbody = document.getElementById('incidents-body');
+    const pillCls = { Критический: 'high', Средний: 'med', Низкий: 'low' };
+    if (!data.length) {
+      tbody.innerHTML = '<tr><td class="empty-row" colspan="7">Инцидентов не найдено</td></tr>';
+      return;
+    }
+    tbody.innerHTML = data.map(inc => `
+      <tr>
+        <td style="color:var(--muted)">#${inc.id}</td>
+        <td style="font-size:12px">${(inc.detected_at || '').slice(11, 19)}</td>
+        <td>${inc.employee}</td>
+        <td>${inc.violation_type}</td>
+        <td><span class="pill ${pillCls[inc.severity] || 'low'}">${inc.severity}</span></td>
+        <td style="color:var(--muted);font-size:11px">${inc.filename || ''}</td>
+        <td style="color:var(--muted);font-size:12px">${inc.detail}</td>
+        <td>${inc.filename ? `<button class="view-btn" onclick="openPreview('${escHtml(inc.filename)}','${escHtml(inc.severity)}','${escHtml(inc.violation_type)}')">🔍 Файл</button>` : ''}</td>
+      </tr>`).join('');
+  } catch { document.getElementById('incidents-body').innerHTML = '<tr><td class="empty-row" colspan="7">Ошибка загрузки</td></tr>'; }
+}
+
+/* ── Employees ── */
+async function loadEmployees() {
+  try {
+    const data = await fetch(API + '/api/employees').then(r => r.json());
+    const tbody = document.getElementById('emp-body');
+    if (!data.length) { tbody.innerHTML = '<tr><td class="empty-row" colspan="6">Нет данных</td></tr>'; return; }
+    tbody.innerHTML = data.map(e => {
+      const badge = e.risk_score > 50
+        ? '<span class="pill high">Высокий</span>'
+        : e.risk_score > 20
+        ? '<span class="pill med">Средний</span>'
+        : '<span class="pill low">Низкий</span>';
+      return `<tr>
+        <td>${e.employee}</td>
+        <td>${e.screens}</td>
+        <td style="color:var(--danger)">${e.high_count}</td>
+        <td style="color:var(--warn)">${e.med_count}</td>
+        <td style="color:var(--muted);font-size:12px">${(e.last_incident || '').slice(0, 19)}</td>
+        <td>${badge}</td>
+      </tr>`;
+    }).join('');
+  } catch { document.getElementById('emp-body').innerHTML = '<tr><td class="empty-row" colspan="6">Ошибка загрузки</td></tr>'; }
+}
+
+/* ── Input folder info + Tesseract check ── */
+async function loadInputInfo() {
+  try {
+    const [d, t] = await Promise.all([
+      fetch(API + '/api/input_info').then(r => r.json()),
+      fetch(API + '/api/tesseract_check').then(r => r.json()),
+    ]);
+    document.getElementById('input-info').innerHTML =
+      `Папка: <span>${d.folder}</span> &nbsp;|&nbsp; Файлов для анализа (JPEG + PNG): <span>${d.count.toLocaleString('ru')}</span>`;
+    document.getElementById('input-folder-display').value = d.folder;
+
+    const btn = document.getElementById('start-btn');
+    const warn = document.getElementById('tess-warn');
+    if (!t.ok) {
+      warn.style.display = 'block';
+      btn.disabled = true;
+      btn.title = 'Требуется установить Tesseract';
+    } else {
+      warn.style.display = 'none';
+      btn.disabled = false;
+      const tessInfo = `Tesseract: ${t.version}` + (t.has_rus ? ' · rus ✓' : ' · <b style="color:var(--warn)">rus не найден!</b>');
+      document.getElementById('input-info').innerHTML += ` &nbsp;|&nbsp; ${tessInfo}`;
+    }
+  } catch {
+    document.getElementById('input-info').innerHTML = 'Не удалось получить информацию о папке';
+  }
+}
+
+/* ── Analysis ── */
+async function startAnalysis() {
+  logOffset = 0;
+  document.getElementById('log-box').innerHTML = '';
+  document.getElementById('progress-wrap').style.display = 'block';
+  document.getElementById('start-btn').disabled = true;
+  document.getElementById('stop-btn').style.display = 'inline-block';
+
+  try {
+    const r = await fetch(API + '/api/analyze/start', { method: 'POST' }).then(r => r.json());
+    if (!r.ok) { alert(r.error); resetAnalysisUI(); return; }
+    pollTimer = setInterval(pollStatus, 800);
+  } catch { alert('Не удалось связаться с сервером'); resetAnalysisUI(); }
+}
+
+async function stopAnalysis() {
+  await fetch(API + '/api/analyze/stop', { method: 'POST' });
+}
+
+async function pollStatus() {
+  try {
+    const s = await fetch(API + `/api/analyze/status?since=${logOffset}`).then(r => r.json());
+
+    // Progress bar
+    const pct = s.total > 0 ? Math.round(s.processed / s.total * 100) : 0;
+    document.getElementById('p-bar').style.width = pct + '%';
+    document.getElementById('p-label').textContent = s.running
+      ? `Обработка... ${pct}% (${s.processed.toLocaleString('ru')} из ${s.total.toLocaleString('ru')})`
+      : `Завершено: ${s.processed.toLocaleString('ru')} файлов`;
+
+    const eta = s.eta_sec != null
+      ? s.eta_sec > 3600
+        ? `${Math.round(s.eta_sec / 3600)} ч`
+        : s.eta_sec > 60
+        ? `${Math.round(s.eta_sec / 60)} мин`
+        : `${s.eta_sec} сек`
+      : '—';
+    document.getElementById('p-sub').textContent =
+      `Скорость: ${s.speed} скр/мин  |  ETA: ${eta}`;
+
+    // Run stats
+    document.getElementById('run-stats').innerHTML = `
+      <div><div style="font-size:11px;color:var(--muted);margin-bottom:4px">КРИТИЧЕСКИХ</div><div style="font-size:1.4rem;font-weight:700;color:var(--danger)">${s.high}</div></div>
+      <div><div style="font-size:11px;color:var(--muted);margin-bottom:4px">СРЕДНИХ</div><div style="font-size:1.4rem;font-weight:700;color:var(--warn)">${s.medium}</div></div>
+      <div><div style="font-size:11px;color:var(--muted);margin-bottom:4px">НИЗКИХ</div><div style="font-size:1.4rem;font-weight:700;color:var(--ok)">${s.low}</div></div>
+      <div><div style="font-size:11px;color:var(--muted);margin-bottom:4px">ЧИСТЫХ</div><div style="font-size:1.4rem;font-weight:700;color:var(--accent)">${s.clean}</div></div>`;
+
+    // Log
+    const box = document.getElementById('log-box');
+    if (s.log && s.log.length) {
+      s.log.forEach(entry => {
+        const d = document.createElement('div');
+        d.className = 'log-' + (entry.level || 'info');
+        d.textContent = entry.msg;
+        box.appendChild(d);
+      });
+      logOffset += s.log.length;
+      box.scrollTop = box.scrollHeight;
+    }
+
+    if (!s.running) {
+      clearInterval(pollTimer);
+      resetAnalysisUI();
+      loadDashboard();
+    }
+  } catch {}
+}
+
+function resetAnalysisUI() {
+  document.getElementById('start-btn').disabled = false;
+  document.getElementById('stop-btn').style.display = 'none';
+}
+
+async function clearData() {
+  if (!confirm('Удалить все результаты из базы данных?')) return;
+  try {
+    let r = await fetch(API + '/api/clear', { method: 'POST' }).then(r => r.json());
+    if (!r.ok && r.error && r.error.includes('анализ')) {
+      if (!confirm('Анализ запущен. Остановить и всё равно очистить?')) return;
+      r = await fetch(API + '/api/clear?force=true', { method: 'POST' }).then(r => r.json());
+      clearInterval(pollTimer);
+      jobRunning = false;
+      document.getElementById('btn-start').disabled = false;
+      document.getElementById('btn-stop').style.display = 'none';
+    }
+    if (r.ok) { loadDashboard(); alert('База очищена'); }
+    else alert(r.error);
+  } catch { alert('Ошибка'); }
+}
+
+/* ── Image preview modal ── */
+function escHtml(s) {
+  return String(s).replace(/'/g, "\\'").replace(/"/g, '&quot;');
+}
+
+// incidentsByFile cache built when incidents load
+let _incByFile = {};
+
+async function openPreview(filename, severity, vtype) {
+  const modal = document.getElementById('preview-modal');
+  const img   = document.getElementById('modal-img');
+
+  document.getElementById('modal-filename').textContent = filename;
+  document.getElementById('modal-meta').textContent = `${severity} · ${vtype}`;
+
+  // Show matching incidents from cache (all violations for this file)
+  const pillCls = { Критический: 'high', Средний: 'med', Низкий: 'low' };
+  const related = _incByFile[filename] || [];
+  document.getElementById('modal-incidents').innerHTML = related.length
+    ? related.map(i => `<span class="pill ${pillCls[i.severity] || 'low'}">${i.violation_type}: ${i.detail}</span>`).join('')
+    : `<span class="pill ${pillCls[severity] || 'low'}">${severity} · ${vtype}</span>`;
+
+  img.src = '';
+  img.src = API + '/api/file?filename=' + encodeURIComponent(filename);
+  modal.classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+
+function closePreview(event) {
+  if (event && event.target !== document.getElementById('preview-modal')) return;
+  document.getElementById('preview-modal').classList.remove('open');
+  document.getElementById('modal-img').src = '';
+  document.body.style.overflow = '';
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closePreview();
+});
+
+/* ── Boot ── */
+(async () => {
+  await checkApi();
+  setInterval(checkApi, 10000);
+  await loadInputInfo();
+  await loadDashboard();
+})();
+</script>
+</body>
+</html>
