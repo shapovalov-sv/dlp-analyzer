@@ -3,10 +3,68 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
+from datetime import datetime
 from pathlib import Path
 from PIL import Image
 
 OCR_TIMEOUT = 30  # seconds per file
+
+
+# ── Checksum validators (отсекают OCR-мусор и случайные цифры) ──────────────
+
+def _luhn_valid(value: str) -> bool:
+    digits = [int(d) for d in re.sub(r'\D', '', value)]
+    if len(digits) < 13:
+        return False
+    checksum = 0
+    for i, d in enumerate(reversed(digits)):
+        if i % 2 == 1:
+            d *= 2
+            if d > 9:
+                d -= 9
+        checksum += d
+    return checksum % 10 == 0
+
+
+def _snils_valid(value: str) -> bool:
+    digits = re.sub(r'\D', '', value)
+    if len(digits) != 11:
+        return False
+    s = sum(int(d) * (9 - i) for i, d in enumerate(digits[:9])) % 101
+    if s == 100:
+        s = 0
+    return s == int(digits[9:])
+
+
+def _inn_valid(value: str) -> bool:
+    digits = re.sub(r'\D', '', value)
+
+    def ctrl(ds: str, weights: list[int]) -> int:
+        return sum(int(d) * w for d, w in zip(ds, weights)) % 11 % 10
+
+    if len(digits) == 10:
+        return ctrl(digits[:9], [2, 4, 10, 3, 5, 9, 4, 6, 8]) == int(digits[9])
+    if len(digits) == 12:
+        return (ctrl(digits[:10], [7, 2, 4, 10, 3, 5, 9, 4, 6, 8]) == int(digits[10])
+                and ctrl(digits[:11], [3, 7, 2, 4, 10, 3, 5, 9, 4, 6, 8]) == int(digits[11]))
+    return False
+
+
+VALIDATORS = {
+    'Банковская карта': _luhn_valid,
+    'СНИЛС': _snils_valid,
+    'ИНН': _inn_valid,
+}
+
+# Словарные паттерны (жаргон/ключевые слова): одиночное совпадение — слабый
+# сигнал, понижаем до «Средний»; «Критический» остаётся при 2+ совпадениях.
+SINGLE_MATCH_DOWNGRADE = {
+    'Коррупция / взятка',
+    'Обналичивание / отмывание',
+    'Криминальная активность',
+    'Уголовный / правовой риск',
+}
 
 # ── Patterns: (type, regex, severity, describe_lambda) ─────────────────────
 PATTERNS = [
@@ -23,7 +81,8 @@ PATTERNS = [
     ),
     (
         'Номер счёта',
-        r'(?i)(?:счёт|счет|р/с|р\.с\.|расчётный)[\s:№]*(\d{20})',
+        # [а-яё]* — падежи: «счёта», «счётом»
+        r'(?i)(?:счёт|счет|р/с|р\.с\.|расчётный)[а-яё]*[\s:№]*(\d{20})(?!\d)',
         'Критический',
         lambda m: f'Счёт: {m[:4]}...{m[-4:]}',
     ),
@@ -71,7 +130,7 @@ PATTERNS = [
     ),
     (
         'БИК банка',
-        r'(?i)(?:БИК|BIK)[\s:]*(\d{9})',
+        r'(?i)(?:БИК|BIK)(?:\s+банка)?[\s:]*(\d{9})(?!\d)',
         'Критический',
         lambda m: f'БИК: {m[:3]}***{m[-3:]}',
     ),
@@ -115,7 +174,7 @@ PATTERNS = [
         r'|\bналичка\s+мимо\s+кассы\b'
         r'|\bдроппер\b'                  # дроп-мул
         r'|\bдроп(?:-\s*мул)?\b'
-        r'|\bтранзит(?:ная\s+схема)?\b'
+        r'|\bтранзитная\s+схема\b'
         r'|\bфиктивн\w+\s+(?:сделк|договор|контракт)\b'
         r'|\bподставн\w+\s+фирм\b'       # подставная фирма
         r'|\bоднодневка\b'               # фирма-однодневка
@@ -136,13 +195,11 @@ PATTERNS = [
         r'|\bрейдерств\b'                # рейдерство
         r'|\bкрышевание\b'
         r'|\bкрышевать\b'
-        r'|\bнаезд\b'                    # жаргон: силовое давление
         r'|\bслить\s+базу\b'             # слить базу данных
         r'|\bслить\s+данные\b'
         r'|\bпробить\s+по\s+базе\b'      # незаконный запрос по базам
         r'|\bкупить\s+справку\b'
         r'|\bкупить\s+(?:диплом|права|документ)\b'
-        r'|\bпальцы\s+вверх\b'           # жаргон угрозы
         r'|\bчёрный\s+нал\b'
         r'|\bналик\b'                    # жаргон: наличные вне кассы
         r'|\bкидалово\b'
@@ -167,7 +224,6 @@ PATTERNS = [
         r'|\bпод\s+следствием\b'
         r'|\bпод\s+стражей\b'
         r'|\bсрок\s+(?:получить|дать|лет)\b'  # «получить срок»
-        r'|\bзона\b'                     # жаргон: тюрьма
         r'|\bпосадить\b'                 # жаргон: посадить в тюрьму
         r'|\bконвертная\s+схема\b'
         r')',
@@ -199,7 +255,9 @@ PATTERNS = [
     ),
     (
         'Телефон РФ',
-        r'(?:\+7|8)[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}',
+        # lookaround-границы: «8…» внутри длинной цифровой строки
+        # (номер счёта, карта) — не телефон
+        r'(?<!\d)(?:\+7|8)[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}(?!\d)',
         'Средний',
         lambda m: f'Телефон: {m[:4]}*****{m[-2:]}',
     ),
@@ -322,19 +380,41 @@ PATTERNS = [
 
 
 def _find_tesseract() -> str:
-    for candidate in ('/opt/homebrew/bin/tesseract', '/usr/local/bin/tesseract', '/usr/bin/tesseract'):
-        if os.path.isfile(candidate):
-            return candidate
     found = shutil.which('tesseract')
     if found:
         return found
+    candidates = (
+        '/opt/homebrew/bin/tesseract',
+        '/usr/local/bin/tesseract',
+        '/usr/bin/tesseract',
+        r'C:\Program Files\Tesseract-OCR\tesseract.exe',
+        r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe',
+    )
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
     raise FileNotFoundError('Tesseract не найден')
+
+
+# Реестр живых OCR-процессов — чтобы останавливать только свои,
+# а не все tesseract в системе.
+_procs_lock = threading.Lock()
+_active_procs: set = set()
+
+
+def kill_active_ocr():
+    """Kill all tesseract processes spawned by this app."""
+    with _procs_lock:
+        procs = list(_active_procs)
+    for proc in procs:
+        if proc.poll() is None:
+            proc.kill()
 
 
 def _run_ocr(img_path: str, lang: str) -> str:
     """Run tesseract as subprocess with hard timeout and guaranteed kill."""
     tess = _find_tesseract()
-    with tempfile.NamedTemporaryFile(suffix='', delete=False, dir='/tmp', prefix='dlp_') as tf:
+    with tempfile.NamedTemporaryFile(suffix='', delete=False, prefix='dlp_') as tf:
         out_base = tf.name
     out_txt = out_base + '.txt'
     proc = None
@@ -344,6 +424,8 @@ def _run_ocr(img_path: str, lang: str) -> str:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+        with _procs_lock:
+            _active_procs.add(proc)
         try:
             proc.wait(timeout=OCR_TIMEOUT)
         except subprocess.TimeoutExpired:
@@ -357,9 +439,12 @@ def _run_ocr(img_path: str, lang: str) -> str:
                 return f.read()
         return ''
     finally:
-        if proc and proc.poll() is None:
-            proc.kill()
-            proc.wait()
+        if proc:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            with _procs_lock:
+                _active_procs.discard(proc)
         for p in (out_base, out_txt):
             try:
                 os.unlink(p)
@@ -367,24 +452,83 @@ def _run_ocr(img_path: str, lang: str) -> str:
                 pass
 
 
+# Слова из типичных имён скриншотов, которые не являются именем сотрудника
+_NAME_STOPWORDS = {
+    'снимок', 'экрана', 'скрин', 'скриншот', 'фото',
+    'screenshot', 'screen', 'shot', 'image', 'img', 'photo', 'capture',
+}
+
+
 def _extract_employee(filename: str) -> tuple[str, str]:
+    """Имя сотрудника — только из формата агента «login_дата_время»:
+    первый токен буквенный, сразу за ним дата/время. Случайные слова из
+    произвольных имён файлов (pro-veb-klient…) именем не считаются."""
     stem = Path(filename).stem
-    parts = re.split(r'[_\-]', stem)
-    for part in parts:
-        if part.isalpha() and 3 <= len(part) <= 30:
-            return part.capitalize(), '—'
+    parts = re.split(r'[_\-\s]+', stem)
+    if len(parts) >= 2:
+        first, second = parts[0], parts[1]
+        if (first.isalpha() and 3 <= len(first) <= 30
+                and first.lower() not in _NAME_STOPWORDS
+                and re.match(r'\d{4}', second)):  # дата: 2026-04-27 / 20260427
+            return first.capitalize(), '—'
     return 'Неизвестно', '—'
+
+
+def find_incidents(text: str) -> list[dict]:
+    """Scan text against all PATTERNS. Pure function — easy to test without OCR."""
+    incidents = []
+    for vtype, pattern, severity, describe in PATTERNS:
+        matches = []
+        for m in re.finditer(pattern, text):
+            raw = m.group(1) if m.re.groups else m.group(0)
+            if raw:
+                matches.append(str(raw))
+
+        validate = VALIDATORS.get(vtype)
+        if validate:
+            matches = [v for v in matches if validate(v)]
+        if not matches:
+            continue
+
+        sev = severity
+        if vtype in SINGLE_MATCH_DOWNGRADE and len(matches) == 1 and severity == 'Критический':
+            sev = 'Средний'
+
+        try:
+            detail = describe(matches[0])
+        except Exception:
+            detail = f'Найдено совпадений: {len(matches)}'
+        if len(matches) > 1:
+            detail += f' (совпадений: {len(matches)})'
+
+        incidents.append({
+            'violation_type': vtype,
+            'severity': sev,
+            'detail': detail,
+            'count': len(matches),
+        })
+    return incidents
+
+
+def _file_event_time(filepath: str) -> str | None:
+    """Event time = file mtime (момент снятия скриншота, а не анализа)."""
+    try:
+        mtime = os.path.getmtime(filepath)
+        return datetime.fromtimestamp(mtime).isoformat(sep=' ', timespec='seconds')
+    except OSError:
+        return None
 
 
 def analyze_file(filepath: str, lang: str = 'rus+eng') -> dict:
     filename = os.path.basename(filepath)
+    event_at = _file_event_time(filepath)
     tmp_png = None
     try:
         img_rgb_path = filepath
         ext = filepath.lower().rsplit('.', 1)[-1]
         if ext not in ('jpg', 'jpeg', 'png', 'tiff', 'tif', 'bmp'):
             with Image.open(filepath) as im:
-                with tempfile.NamedTemporaryFile(suffix='.png', delete=False, dir='/tmp', prefix='dlp_img_') as tf:
+                with tempfile.NamedTemporaryFile(suffix='.png', delete=False, prefix='dlp_img_') as tf:
                     tmp_png = tf.name
                 im.convert('RGB').save(tmp_png, 'PNG')
             img_rgb_path = tmp_png
@@ -395,6 +539,7 @@ def analyze_file(filepath: str, lang: str = 'rus+eng') -> dict:
         return {
             'filename': filename,
             'path': filepath,
+            'event_at': event_at,
             'ocr_text': '',
             'incidents': [],
             'error': str(e),
@@ -407,41 +552,31 @@ def analyze_file(filepath: str, lang: str = 'rus+eng') -> dict:
                 pass
 
     employee, dept = _extract_employee(filename)
-    incidents = []
-
-    for vtype, pattern, severity, describe in PATTERNS:
-        matches = re.findall(pattern, text)
-        if not matches:
-            continue
-        raw = matches[0]
-        if isinstance(raw, tuple):
-            raw = raw[0]
-        try:
-            detail = describe(str(raw))
-        except Exception:
-            detail = f'Найдено совпадений: {len(matches)}'
-        incidents.append({
-            'employee': employee,
-            'department': dept,
-            'violation_type': vtype,
-            'severity': severity,
-            'detail': detail,
-        })
+    incidents = find_incidents(text)
+    for inc in incidents:
+        inc['employee'] = employee
+        inc['department'] = dept
 
     return {
         'filename': filename,
         'path': filepath,
+        'event_at': event_at,
         'ocr_text': text[:3000],
         'incidents': incidents,
         'error': None,
     }
 
 
-def list_jpeg_files(folder: str) -> list[str]:
+IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tif', '.tiff', '.gif')
+
+
+def list_image_files(folder: str) -> list[str]:
     result = []
     for root, _, files in os.walk(folder):
         for f in files:
-            if f.lower().endswith(('.jpg', '.jpeg', '.png')):
+            if f.startswith('.'):
+                continue
+            if f.lower().endswith(IMAGE_EXTENSIONS):
                 result.append(os.path.join(root, f))
     result.sort()
     return result

@@ -1,5 +1,6 @@
 fastapi==0.115.5
 uvicorn==0.32.1
-python-multipart==0.0.12
 Pillow==11.0.0
-pytesseract==0.3.13
+
+# dev
+pytest==8.3.4

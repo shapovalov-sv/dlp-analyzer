@@ -635,7 +635,7 @@ async function loadInputInfo() {
       fetch(API + '/api/tesseract_check').then(r => r.json()),
     ]);
     document.getElementById('input-info').innerHTML =
-      `Папка: <span>${d.folder}</span> &nbsp;|&nbsp; Файлов для анализа (JPEG + PNG): <span>${d.count.toLocaleString('ru')}</span>`;
+      `Папка: <span>${d.folder}</span> &nbsp;|&nbsp; Изображений для анализа: <span>${d.count.toLocaleString('ru')}</span>`;
     document.getElementById('input-folder-display').value = d.folder;
 
     const btn = document.getElementById('start-btn');
@@ -702,7 +702,7 @@ async function pollStatus() {
       <div><div style="font-size:11px;color:var(--muted);margin-bottom:4px">НИЗКИХ</div><div style="font-size:1.4rem;font-weight:700;color:var(--ok)">${s.low}</div></div>
       <div><div style="font-size:11px;color:var(--muted);margin-bottom:4px">ЧИСТЫХ</div><div style="font-size:1.4rem;font-weight:700;color:var(--accent)">${s.clean}</div></div>`;
 
-    // Log
+    // Log (server filters by seq > logOffset — trimming server-side buffer is safe)
     const box = document.getElementById('log-box');
     if (s.log && s.log.length) {
       s.log.forEach(entry => {
@@ -711,7 +711,7 @@ async function pollStatus() {
         d.textContent = entry.msg;
         box.appendChild(d);
       });
-      logOffset += s.log.length;
+      logOffset = s.log[s.log.length - 1].seq;
       box.scrollTop = box.scrollHeight;
     }
 
@@ -736,9 +736,7 @@ async function clearData() {
       if (!confirm('Анализ запущен. Остановить и всё равно очистить?')) return;
       r = await fetch(API + '/api/clear?force=true', { method: 'POST' }).then(r => r.json());
       clearInterval(pollTimer);
-      jobRunning = false;
-      document.getElementById('btn-start').disabled = false;
-      document.getElementById('btn-stop').style.display = 'none';
+      resetAnalysisUI();
     }
     if (r.ok) { loadDashboard(); alert('База очищена'); }
     else alert(r.error);

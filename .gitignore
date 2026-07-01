@@ -6,3 +6,5 @@ input/
 server.log
 .DS_Store
 *.db-journal
+*.db-wal
+*.db-shm

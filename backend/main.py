@@ -2,7 +2,6 @@ import os
 import sys
 import time
 import threading
-import subprocess
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from contextlib import asynccontextmanager
 
@@ -39,19 +38,23 @@ _job: dict = {
     'error':     None,
 }
 _stop_event = threading.Event()
+_log_seq = 0  # monotonic id — клиент фильтрует лог по нему, обрезка списка не сбивает офсеты
 
 
 def _log(level: str, msg: str):
+    global _log_seq
     with _lock:
-        _job['log'].append({'level': level, 'msg': msg})
+        _log_seq += 1
+        _job['log'].append({'seq': _log_seq, 'level': level, 'msg': msg})
         if len(_job['log']) > 500:
-            _job['log'] = _job['log'][-500:]
+            del _job['log'][:len(_job['log']) - 500]
 
 
 def _make_error_result(filepath: str, error: str) -> dict:
     return {
         'filename': os.path.basename(filepath),
         'path':     filepath,
+        'event_at': None,
         'ocr_text': '',
         'incidents': [],
         'error':    error,
@@ -89,15 +92,21 @@ def _record_result(result: dict, start: float):
 
 def _run_analysis():
     global _job
-    files = an.list_jpeg_files(INPUT_DIR)
+    all_files = an.list_image_files(INPUT_DIR)
+    known = db.get_processed_paths()
+    files = [f for f in all_files if f not in known]
+    skipped = len(all_files) - len(files)
 
+    if skipped:
+        _log('info', f'[INIT] Пропущено уже обработанных: {skipped}')
     if not files:
-        _log('warn', '[WARN] В папке input/ не найдено файлов')
+        msg = '[WARN] Новых файлов нет' if all_files else '[WARN] В папке input/ не найдено файлов'
+        _log('warn', msg)
         with _lock:
             _job['running'] = False
         return
 
-    _log('info', f'[INIT] Найдено файлов: {len(files)}')
+    _log('info', f'[INIT] Найдено новых файлов: {len(files)}')
     _log('info', f'[INIT] Язык OCR: {OCR_LANG}')
     _log('info', '[SCAN] Начало обработки...')
 
@@ -121,7 +130,7 @@ def _run_analysis():
 
             if not done_set:
                 # Nothing completed → something is truly stuck
-                subprocess.run(['pkill', '-9', '-f', 'tesseract'], capture_output=True)
+                an.kill_active_ocr()
                 _log('warn', f'[TIMEOUT] Зависание OCR — принудительная остановка {len(pending)} файлов')
                 for future in list(pending):
                     result = _make_error_result(future_to_path[future], f'Таймаут {FILE_TIMEOUT}с')
@@ -143,7 +152,8 @@ def _run_analysis():
             _log('warn', '[STOP] Анализ остановлен пользователем')
 
     finally:
-        pool.shutdown(wait=False)  # don't block — stray threads will die on their own
+        # cancel_futures — иначе очередь продолжит запускать OCR после остановки
+        pool.shutdown(wait=False, cancel_futures=True)
         elapsed = time.time() - start
         with _lock:
             done = _job['processed']
@@ -192,7 +202,7 @@ def stats():
 def incidents(
     severity: str = Query(default=''),
     vtype:    str = Query(default='', alias='type'),
-    limit:    int = Query(default=200),
+    limit:    int = Query(default=200, ge=1, le=1000),
 ):
     return db.get_incidents(severity=severity, vtype=vtype, limit=limit)
 
@@ -239,7 +249,7 @@ def analyze_start():
 @app.post('/api/analyze/stop')
 def analyze_stop():
     _stop_event.set()
-    subprocess.run(['pkill', '-9', '-f', 'tesseract'], capture_output=True)
+    an.kill_active_ocr()
     return {'ok': True}
 
 
@@ -247,7 +257,7 @@ def analyze_stop():
 def analyze_status(since: int = Query(default=0)):
     with _lock:
         state = dict(_job)
-        state['log'] = _job['log'][since:]
+        state['log'] = [e for e in _job['log'] if e['seq'] > since]
     return state
 
 
@@ -256,7 +266,7 @@ def clear(force: bool = Query(default=False)):
     global _job
     if force:
         _stop_event.set()
-        subprocess.run(['pkill', '-9', '-f', 'tesseract'], capture_output=True)
+        an.kill_active_ocr()
         with _lock:
             _job['running'] = False
     else:
@@ -269,14 +279,14 @@ def clear(force: bool = Query(default=False)):
 
 @app.get('/api/input_info')
 def input_info():
-    files = an.list_jpeg_files(INPUT_DIR)
+    files = an.list_image_files(INPUT_DIR)
     return {'folder': INPUT_DIR, 'count': len(files), 'files': [os.path.basename(f) for f in files]}
 
 
 @app.get('/api/file')
 def serve_file(filename: str = Query(...)):
     """Serve an image file from the input directory by filename."""
-    files = an.list_jpeg_files(INPUT_DIR)
+    files = an.list_image_files(INPUT_DIR)
     matched = [f for f in files if os.path.basename(f) == filename]
     if not matched:
         raise HTTPException(status_code=404, detail='Файл не найден')
@@ -286,7 +296,7 @@ def serve_file(filename: str = Query(...)):
 @app.get('/api/ocr_preview')
 def ocr_preview(filename: str = Query(...)):
     """Run OCR on one file and return raw text — for diagnostics."""
-    files = an.list_jpeg_files(INPUT_DIR)
+    files = an.list_image_files(INPUT_DIR)
     matched = [f for f in files if os.path.basename(f) == filename]
     if not matched:
         return {'ok': False, 'error': f'Файл не найден: {filename}'}
@@ -299,9 +309,10 @@ def ocr_preview(filename: str = Query(...)):
 
 @app.get('/api/tesseract_check')
 def tesseract_check():
-    import shutil
-    binary = shutil.which('tesseract') or '/opt/homebrew/bin/tesseract'
-    if not os.path.isfile(binary):
+    import subprocess
+    try:
+        binary = an._find_tesseract()
+    except FileNotFoundError:
         return {'ok': False, 'error': 'Tesseract не найден. Установите: brew install tesseract tesseract-lang'}
     try:
         ver = subprocess.check_output([binary, '--version'], stderr=subprocess.STDOUT).decode().split('\n')[0]
