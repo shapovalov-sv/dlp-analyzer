@@ -15,6 +15,19 @@ sys.path.insert(0, os.path.dirname(__file__))
 import database as db
 import analyzer as an
 
+
+def _kill_tesseract():
+    """Force-kill any stray tesseract processes (cross-platform)."""
+    try:
+        if os.name == 'nt':
+            subprocess.run(['taskkill', '/F', '/IM', 'tesseract.exe'],
+                           capture_output=True)
+        else:
+            subprocess.run(['pkill', '-9', '-f', 'tesseract'],
+                           capture_output=True)
+    except (OSError, FileNotFoundError):
+        pass
+
 # ── Paths ────────────────────────────────────────────────────────────────────
 BASE_DIR     = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 INPUT_DIR    = os.path.join(BASE_DIR, 'input')
@@ -121,7 +134,7 @@ def _run_analysis():
 
             if not done_set:
                 # Nothing completed → something is truly stuck
-                subprocess.run(['pkill', '-9', '-f', 'tesseract'], capture_output=True)
+                _kill_tesseract()
                 _log('warn', f'[TIMEOUT] Зависание OCR — принудительная остановка {len(pending)} файлов')
                 for future in list(pending):
                     result = _make_error_result(future_to_path[future], f'Таймаут {FILE_TIMEOUT}с')
@@ -239,7 +252,7 @@ def analyze_start():
 @app.post('/api/analyze/stop')
 def analyze_stop():
     _stop_event.set()
-    subprocess.run(['pkill', '-9', '-f', 'tesseract'], capture_output=True)
+    _kill_tesseract()
     return {'ok': True}
 
 
@@ -256,7 +269,7 @@ def clear(force: bool = Query(default=False)):
     global _job
     if force:
         _stop_event.set()
-        subprocess.run(['pkill', '-9', '-f', 'tesseract'], capture_output=True)
+        _kill_tesseract()
         with _lock:
             _job['running'] = False
     else:
@@ -299,10 +312,10 @@ def ocr_preview(filename: str = Query(...)):
 
 @app.get('/api/tesseract_check')
 def tesseract_check():
-    import shutil
-    binary = shutil.which('tesseract') or '/opt/homebrew/bin/tesseract'
-    if not os.path.isfile(binary):
-        return {'ok': False, 'error': 'Tesseract не найден. Установите: brew install tesseract tesseract-lang'}
+    try:
+        binary = an._find_tesseract()
+    except FileNotFoundError:
+        return {'ok': False, 'error': 'Tesseract не найден. Установите его для вашей ОС (Windows: https://github.com/UB-Mannheim/tesseract/wiki, macOS: brew install tesseract tesseract-lang, Ubuntu: apt install tesseract-ocr tesseract-ocr-rus)'}
     try:
         ver = subprocess.check_output([binary, '--version'], stderr=subprocess.STDOUT).decode().split('\n')[0]
         langs = subprocess.check_output([binary, '--list-langs'], stderr=subprocess.STDOUT).decode()

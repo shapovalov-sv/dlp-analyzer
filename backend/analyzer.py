@@ -322,19 +322,26 @@ PATTERNS = [
 
 
 def _find_tesseract() -> str:
-    for candidate in ('/opt/homebrew/bin/tesseract', '/usr/local/bin/tesseract', '/usr/bin/tesseract'):
-        if os.path.isfile(candidate):
-            return candidate
     found = shutil.which('tesseract')
     if found:
         return found
+    candidates = (
+        '/opt/homebrew/bin/tesseract',
+        '/usr/local/bin/tesseract',
+        '/usr/bin/tesseract',
+        r'C:\Program Files\Tesseract-OCR\tesseract.exe',
+        r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe',
+    )
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
     raise FileNotFoundError('Tesseract не найден')
 
 
 def _run_ocr(img_path: str, lang: str) -> str:
     """Run tesseract as subprocess with hard timeout and guaranteed kill."""
     tess = _find_tesseract()
-    with tempfile.NamedTemporaryFile(suffix='', delete=False, dir='/tmp', prefix='dlp_') as tf:
+    with tempfile.NamedTemporaryFile(suffix='', delete=False, dir=tempfile.gettempdir(), prefix='dlp_') as tf:
         out_base = tf.name
     out_txt = out_base + '.txt'
     proc = None
