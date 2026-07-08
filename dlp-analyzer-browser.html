@@ -144,6 +144,13 @@
   .bar-fill.med{background:linear-gradient(90deg,#ffb020,#ffce7a);box-shadow:none}
   .bar-fill.low{background:linear-gradient(90deg,#2ee6a6,#7ff0cc);box-shadow:none}
   .bar-count{width:34px;text-align:right;font-family:var(--mono);font-size:12px;color:var(--dim)}
+  /* Compact, scrollable incident table for large volumes */
+  .tbl-scroll{max-height:520px;overflow-y:auto}
+  .tbl-scroll thead th{position:sticky;top:0;background:#0b1119;z-index:2}
+  .tbl-scroll td{padding:8px 12px}
+  .chk{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:12px;color:var(--dim);cursor:pointer;user-select:none;white-space:nowrap}
+  .chk input{width:15px;height:15px;accent-color:var(--accent);cursor:pointer}
+  .snip{max-width:340px;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 </style>
 </head>
 <body>
@@ -232,7 +239,18 @@
 
     <div class="card">
       <div class="card-title">Инциденты и результаты</div>
-      <div class="tbl-wrap">
+      <div class="row" style="justify-content:space-between;margin-bottom:12px;gap:14px">
+        <label class="chk"><input type="checkbox" id="only-inc" checked onchange="page=1;render()" /> Только с нарушениями</label>
+        <div class="row" style="gap:8px">
+          <span class="muted" id="pg-info"></span>
+          <select id="page-size" onchange="page=1;render()">
+            <option>25</option><option selected>50</option><option>100</option><option>200</option>
+          </select>
+          <button class="view-btn" onclick="pagePrev()">‹ Назад</button>
+          <button class="view-btn" onclick="pageNext()">Вперёд ›</button>
+        </div>
+      </div>
+      <div class="tbl-wrap tbl-scroll">
         <table>
           <thead><tr><th>Файл</th><th>Сотрудник</th><th>Находки</th><th>Фрагмент текста</th><th>Просмотр</th></tr></thead>
           <tbody id="rows"></tbody>
@@ -322,6 +340,7 @@ const results=[];  // {filename, employee, text, incidents, file}
 const queue=[];    // {file, employee}
 let qIndex=0;      // next queue item to process
 let state='idle';  // idle | running | paused
+let page=1;        // current page in the incidents table
 const $=id=>document.getElementById(id);
 function log(msg,cls){const b=$('log');if(b.querySelector('.muted'))b.innerHTML='';const d=document.createElement('div');if(cls)d.style.color=`var(--${cls})`;d.textContent=msg;b.appendChild(d);b.scrollTop=b.scrollHeight;}
 function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
@@ -524,23 +543,36 @@ function refreshEmpFilter(){
 
 function pillCls(sev){return sev===S.C?'high':sev===S.M?'med':'low';}
 
+function pagePrev(){if(page>1){page--;render();}}
+function pageNext(){page++;render();}  // render() clamps to last page
+
 function render(){
   const q=$('search').value.trim();
   const terms=q?q.split(',').map(t=>t.trim().toLowerCase()).filter(Boolean):[];
   const emp=$('emp-filter').value;
+  const onlyInc=$('only-inc').checked;
   const rows=$('rows');
-  const shown=results.filter(r=>{
+  const list=results.filter(r=>{
+    if(onlyInc&&!r.incidents.length)return false;
     if(emp&&r.employee!==emp)return false;
     if(terms.length&&!terms.some(t=>r.text.toLowerCase().includes(t)))return false;
     return true;
   });
+  const size=+$('page-size').value||50;
+  const total=list.length;
+  const pages=Math.max(1,Math.ceil(total/size));
+  if(page>pages)page=pages;
+  if(page<1)page=1;
+  const start=(page-1)*size;
+  const shown=list.slice(start,start+size);
+  $('pg-info').textContent=total?`${start+1}–${Math.min(start+size,total)} из ${total}`+(pages>1?` · стр. ${page}/${pages}`:''):'0 записей';
   if(!shown.length){rows.innerHTML='<tr><td colspan="5" class="muted" style="text-align:center;padding:26px">Ничего не найдено</td></tr>';return;}
   rows.innerHTML=shown.map(r=>{
     const idx=results.indexOf(r);
     const finds=r.incidents.length?r.incidents.map(x=>`<span class="pill ${pillCls(x.severity)}" title="${esc(x.detail)}">${esc(x.type)}</span>`).join(' '):'<span class="pill low">чисто</span>';
     let snip=esc((r.text||'').replace(/\s+/g,' ').slice(0,160));
     terms.forEach(t=>{if(t){const re=new RegExp('('+t.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','gi');snip=snip.replace(re,'<mark>$1</mark>');}});
-    return `<tr><td>${esc(r.filename)}</td><td>${esc(r.employee)}</td><td>${finds}</td><td class="muted">${snip||'—'}</td><td><button class="view-btn" onclick="openFile(${idx})">🔍 Открыть</button></td></tr>`;
+    return `<tr><td>${esc(r.filename)}</td><td>${esc(r.employee)}</td><td>${finds}</td><td class="muted"><span class="snip">${snip||'—'}</span></td><td><button class="view-btn" onclick="openFile(${idx})">🔍 Открыть</button></td></tr>`;
   }).join('');
 }
 
