@@ -102,6 +102,36 @@
     padding:13px 16px;font-size:13px;color:var(--dim);margin-bottom:16px;line-height:1.6}
   .warnbox b{color:var(--accent)}
   a{color:var(--accent)}
+  /* Category toggle chips */
+  .cats{display:flex;flex-wrap:wrap;gap:8px}
+  .cat{font-family:var(--mono);font-size:11px;letter-spacing:.3px;padding:5px 10px;border-radius:3px;cursor:pointer;user-select:none;
+    border:1px solid var(--sc,var(--border2));color:var(--sc,var(--accent));background:rgba(34,211,238,.05);transition:.15s;display:flex;align-items:center;gap:6px}
+  .cat::before{content:'●';font-size:8px}
+  .cat:hover{background:rgba(34,211,238,.1)}
+  .cat.off{color:var(--muted);border-color:var(--border);background:transparent;text-decoration:line-through;opacity:.6}
+  .cat.off::before{content:'○'}
+  .cat.sc-high{--sc:#ff8098}.cat.sc-med{--sc:#ffce7a}.cat.sc-low{--sc:#7ff0cc}
+  .cat.off.sc-high,.cat.off.sc-med,.cat.off.sc-low{--sc:var(--muted)}
+  /* Controls */
+  .ctrl{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:14px}
+  .view-btn{font-family:var(--mono);font-size:11px;padding:4px 10px;border-radius:3px;cursor:pointer;white-space:nowrap;
+    background:transparent;border:1px solid var(--border2);color:var(--accent);transition:.15s}
+  .view-btn:hover{background:rgba(34,211,238,.1);box-shadow:0 0 12px rgba(34,211,238,.2)}
+  /* Modal */
+  .overlay{display:none;position:fixed;inset:0;z-index:100;background:rgba(2,5,10,.88);backdrop-filter:blur(6px);
+    align-items:center;justify-content:center;padding:24px}
+  .overlay.open{display:flex}
+  .modal{background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius);max-width:94vw;max-height:92vh;
+    display:flex;flex-direction:column;overflow:hidden;box-shadow:0 0 60px rgba(34,211,238,.25),0 24px 80px rgba(0,0,0,.7)}
+  .modal-h{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:14px 18px;border-bottom:1px solid var(--border)}
+  .modal-h .fn{font-family:var(--mono);font-size:13px;color:var(--text);word-break:break-all}
+  .modal-h .em{font-family:var(--mono);font-size:11px;color:var(--dim);margin-top:2px}
+  .modal-x{width:32px;height:32px;border-radius:3px;border:1px solid var(--border2);background:transparent;color:var(--accent);
+    cursor:pointer;font-size:18px;flex-shrink:0}
+  .modal-x:hover{background:rgba(34,211,238,.1)}
+  .modal-img{overflow:auto;padding:16px;display:flex;justify-content:center;flex:1;min-height:0}
+  .modal-img img{max-width:100%;border-radius:4px;border:1px solid var(--border)}
+  .modal-f{padding:12px 18px;border-top:1px solid var(--border);display:flex;gap:6px;flex-wrap:wrap}
 </style>
 </head>
 <body>
@@ -125,14 +155,30 @@
       ⇪ Перетащите сюда скриншоты<br/><span class="muted">или используйте кнопки ниже</span>
     </div>
     <div class="row" style="margin-top:14px">
-      <button class="btn" onclick="filePick.click()">📄 Выбрать файлы</button>
-      <button class="btn ghost" onclick="dirPick.click()">📁 Выбрать папку (сотрудника)</button>
+      <button class="btn ghost" onclick="filePick.click()">📄 Добавить файлы</button>
+      <button class="btn ghost" onclick="dirPick.click()">📁 Добавить папку (сотрудника)</button>
       <input type="text" id="emp-manual" placeholder="Сотрудник (если файлы без папки)" style="flex:1;min-width:200px" />
     </div>
     <input type="file" id="filePick" accept="image/*" multiple hidden />
     <input type="file" id="dirPick" webkitdirectory multiple hidden />
+    <div class="ctrl">
+      <button class="btn" id="btn-play" onclick="play()" disabled>▶ Запустить</button>
+      <button class="btn ghost" id="btn-pause" onclick="pauseRun()" disabled>⏸ Пауза</button>
+      <button class="btn ghost" id="btn-stop" onclick="stopRun()" disabled>⏹ Стоп</button>
+      <span class="muted" id="queueInfo">Очередь пуста</span>
+    </div>
     <div class="progress" id="progWrap" style="display:none"><i id="progBar"></i></div>
     <div class="muted" id="progText"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Категории детекции</div>
+    <div class="row" style="margin-bottom:12px">
+      <button class="view-btn" onclick="setAllCats(true)">Включить все</button>
+      <button class="view-btn" onclick="setAllCats(false)">Снять все</button>
+      <span class="muted" id="catInfo"></span>
+    </div>
+    <div class="cats" id="cats"></div>
   </div>
 
   <div id="results" style="display:none">
@@ -158,7 +204,7 @@
       <div class="card-title">Инциденты и результаты</div>
       <div class="tbl-wrap">
         <table>
-          <thead><tr><th>Файл</th><th>Сотрудник</th><th>Находки</th><th>Фрагмент текста</th></tr></thead>
+          <thead><tr><th>Файл</th><th>Сотрудник</th><th>Находки</th><th>Фрагмент текста</th><th>Просмотр</th></tr></thead>
           <tbody id="rows"></tbody>
         </table>
       </div>
@@ -170,6 +216,20 @@
     <div class="log" id="log"><span class="muted">Лог появится после загрузки скринов…</span></div>
   </div>
 </main>
+
+<div class="overlay" id="overlay" onclick="if(event.target===this)closeModal()">
+  <div class="modal">
+    <div class="modal-h">
+      <div>
+        <div class="fn" id="m-fn"></div>
+        <div class="em" id="m-em"></div>
+      </div>
+      <button class="modal-x" onclick="closeModal()">&times;</button>
+    </div>
+    <div class="modal-img"><img id="m-img" src="" alt="" /></div>
+    <div class="modal-f" id="m-finds"></div>
+  </div>
+</div>
 
 <script>
 /* ── Detection patterns (ported from backend/analyzer.py) ── */
@@ -211,9 +271,12 @@ const RAW=[
 ];
 const PATTERNS=RAW.map(([type,src,severity,describe])=>({type,re:compile(src),severity,describe}));
 
+const enabledTypes=new Set(PATTERNS.map(p=>p.type)); // all categories on by default
+
 function analyze(text){
   const incidents=[];
   for(const p of PATTERNS){
+    if(!enabledTypes.has(p.type))continue;   // skip disabled categories
     p.re.lastIndex=0;
     const m=p.re.exec(text);
     if(!m)continue;
@@ -225,40 +288,98 @@ function analyze(text){
 }
 
 /* ── State ── */
-const results=[]; // {filename, employee, text, incidents}
+const results=[];  // {filename, employee, text, incidents, file}
+const queue=[];    // {file, employee}
+let qIndex=0;      // next queue item to process
+let state='idle';  // idle | running | paused
 const $=id=>document.getElementById(id);
 function log(msg,cls){const b=$('log');if(b.querySelector('.muted'))b.innerHTML='';const d=document.createElement('div');if(cls)d.style.color=`var(--${cls})`;d.textContent=msg;b.appendChild(d);b.scrollTop=b.scrollHeight;}
 function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function empFromPath(file){const p=file.webkitRelativePath||'';const parts=p.split('/');if(parts.length>1&&parts[0])return parts[0];return ($('emp-manual').value.trim()||'Не задан');}
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 
-/* ── Processing ── */
-let busy=false;
-async function handleFiles(files){
+/* ── Category toggles ── */
+function buildCats(){
+  const box=$('cats');
+  box.innerHTML=PATTERNS.map(p=>{
+    const sc=p.severity===S.C?'sc-high':p.severity===S.M?'sc-med':'sc-low';
+    return `<span class="cat ${sc}" data-type="${esc(p.type)}" onclick="toggleCat(this)">${esc(p.type)}</span>`;
+  }).join('');
+  updateCatInfo();
+}
+function toggleCat(el){
+  const t=el.dataset.type;
+  if(enabledTypes.has(t)){enabledTypes.delete(t);el.classList.add('off');}
+  else{enabledTypes.add(t);el.classList.remove('off');}
+  updateCatInfo();reanalyzeAll();
+}
+function setAllCats(on){
+  enabledTypes.clear();
+  document.querySelectorAll('#cats .cat').forEach(el=>{
+    if(on){enabledTypes.add(el.dataset.type);el.classList.remove('off');}
+    else el.classList.add('off');
+  });
+  updateCatInfo();reanalyzeAll();
+}
+function updateCatInfo(){$('catInfo').textContent=`активно категорий: ${enabledTypes.size} из ${PATTERNS.length}`;}
+function reanalyzeAll(){
+  // Re-run detection on already-recognised text (no repeated OCR)
+  for(const r of results)r.incidents=analyze(r.text||'');
+  refreshEmpFilter();render();updateStats();
+}
+
+/* ── Queue + Play / Pause / Stop ── */
+function enqueue(files){
   const imgs=[...files].filter(f=>/\.(jpe?g|png|bmp|tiff?|webp)$/i.test(f.name));
   if(!imgs.length){alert('Не найдено изображений');return;}
-  if(busy){alert('Дождитесь окончания текущей обработки');return;}
-  busy=true;
+  for(const f of imgs)queue.push({file:f,employee:empFromPath(f)});
+  log(`В очередь добавлено: ${imgs.length}. Нажмите «Запустить».`,'accent');
+  updateControls();
+}
+function updateControls(){
+  const pending=queue.length-qIndex;
+  $('btn-play').disabled  = state==='running' || pending<=0;
+  $('btn-pause').disabled = state!=='running';
+  $('btn-stop').disabled  = state!=='running';
+  $('queueInfo').textContent = queue.length
+    ? `Обработано ${qIndex} из ${queue.length}` + (pending>0?` · в очереди ${pending}`:'') + (state==='paused'?' · пауза':state==='running'?' · идёт анализ':'')
+    : 'Очередь пуста';
+}
+async function play(){
+  if(state==='running')return;
+  if(qIndex>=queue.length){log('Очередь пуста — добавьте файлы.','warn');return;}
+  if(typeof Tesseract==='undefined'){alert('Движок OCR не загружен. Проверьте интернет и перезагрузите страницу.');return;}
+  state='running';
   $('progWrap').style.display='block';$('results').style.display='block';
-  log(`Начинаю обработку: ${imgs.length} файл(ов)`,'accent');
-  for(let i=0;i<imgs.length;i++){
-    const f=imgs[i];const emp=empFromPath(f);
-    $('progText').textContent=`Распознаю ${i+1} из ${imgs.length}: ${f.name} (${emp})`;
+  updateControls();
+  log(qIndex>0?`Продолжаю с позиции ${qIndex+1} из ${queue.length}…`:'Запуск анализа…','accent');
+  while(qIndex<queue.length){
+    if(state!=='running')break;               // paused / stopped → keep qIndex for resume
+    const {file,employee}=queue[qIndex];
+    $('progText').textContent=`Распознаю ${qIndex+1} из ${queue.length}: ${file.name} (${employee})`;
     let text='';
-    try{
-      const {data}=await Tesseract.recognize(f,'rus+eng');
-      text=data.text||'';
-    }catch(e){
-      log(`[ERR] ${f.name}: ${e.message||e}`,'danger');
-    }
+    try{const {data}=await Tesseract.recognize(file,'rus+eng');text=data.text||'';}
+    catch(e){log(`[ERR] ${file.name}: ${e.message||e}`,'danger');}
     const incidents=analyze(text);
-    results.push({filename:f.name,employee:emp,text,incidents});
+    results.push({filename:file.name,employee,text,incidents,file});
     const sev=incidents.some(x=>x.severity===S.C)?'danger':incidents.length?'warn':'ok';
-    log(`[${incidents.length?'НАЙДЕНО':'чисто'}] ${emp} · ${f.name}` + (incidents.length?` → ${incidents.map(x=>x.type).join(', ')}`:''),sev);
-    $('progBar').style.width=Math.round((i+1)/imgs.length*100)+'%';
-    refreshEmpFilter();render();updateStats();
+    log(`[${incidents.length?'НАЙДЕНО':'чисто'}] ${employee} · ${file.name}`+(incidents.length?` → ${incidents.map(x=>x.type).join(', ')}`:''),sev);
+    qIndex++;
+    $('progBar').style.width=Math.round(qIndex/queue.length*100)+'%';
+    refreshEmpFilter();render();updateStats();updateControls();
+    await sleep(0); // yield so UI (pause/stop) stays responsive
   }
-  $('progText').textContent=`Готово. Обработано файлов: ${imgs.length}.`;
-  busy=false;
+  if(qIndex>=queue.length){state='idle';$('progText').textContent=`Готово. Обработано файлов: ${qIndex}.`;}
+  else{$('progText').textContent=`Остановлено на ${qIndex} из ${queue.length}. «Запустить» продолжит с этого места.`;}
+  updateControls();
+}
+function pauseRun(){
+  if(state!=='running')return;
+  state='paused';log('Пауза после текущего файла. «Запустить» продолжит с этого места.','warn');updateControls();
+}
+function stopRun(){
+  if(state!=='running')return;
+  state='paused';log('Стоп. Позиция сохранена — «Запустить» продолжит с этого же места.','warn');updateControls();
 }
 
 function updateStats(){
@@ -292,14 +413,35 @@ function render(){
     if(terms.length&&!terms.some(t=>r.text.toLowerCase().includes(t)))return false;
     return true;
   });
-  if(!shown.length){rows.innerHTML='<tr><td colspan="4" class="muted" style="text-align:center;padding:26px">Ничего не найдено</td></tr>';return;}
+  if(!shown.length){rows.innerHTML='<tr><td colspan="5" class="muted" style="text-align:center;padding:26px">Ничего не найдено</td></tr>';return;}
   rows.innerHTML=shown.map(r=>{
+    const idx=results.indexOf(r);
     const finds=r.incidents.length?r.incidents.map(x=>`<span class="pill ${pillCls(x.severity)}" title="${esc(x.detail)}">${esc(x.type)}</span>`).join(' '):'<span class="pill low">чисто</span>';
     let snip=esc((r.text||'').replace(/\s+/g,' ').slice(0,160));
     terms.forEach(t=>{if(t){const re=new RegExp('('+t.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','gi');snip=snip.replace(re,'<mark>$1</mark>');}});
-    return `<tr><td>${esc(r.filename)}</td><td>${esc(r.employee)}</td><td>${finds}</td><td class="muted">${snip||'—'}</td></tr>`;
+    return `<tr><td>${esc(r.filename)}</td><td>${esc(r.employee)}</td><td>${finds}</td><td class="muted">${snip||'—'}</td><td><button class="view-btn" onclick="openFile(${idx})">🔍 Открыть</button></td></tr>`;
   }).join('');
 }
+
+/* ── File preview modal (verify what was detected) ── */
+let modalUrl=null;
+function openFile(idx){
+  const r=results[idx];if(!r)return;
+  $('m-fn').textContent=r.filename;
+  $('m-em').textContent='Сотрудник: '+r.employee;
+  $('m-finds').innerHTML=r.incidents.length
+    ? r.incidents.map(x=>`<span class="pill ${pillCls(x.severity)}">${esc(x.type)}: ${esc(x.detail)}</span>`).join(' ')
+    : '<span class="pill low">нарушений не обнаружено</span>';
+  if(modalUrl)URL.revokeObjectURL(modalUrl);
+  modalUrl=r.file?URL.createObjectURL(r.file):'';
+  $('m-img').src=modalUrl;
+  $('overlay').classList.add('open');
+}
+function closeModal(){
+  $('overlay').classList.remove('open');$('m-img').src='';
+  if(modalUrl){URL.revokeObjectURL(modalUrl);modalUrl=null;}
+}
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal();});
 
 function exportCsv(){
   const rows=[['Файл','Сотрудник','Тип','Уровень','Что найдено']];
@@ -315,14 +457,15 @@ function exportCsv(){
 }
 
 /* ── Wire up ── */
-$('filePick').addEventListener('change',e=>handleFiles(e.target.files));
-$('dirPick').addEventListener('change',e=>handleFiles(e.target.files));
+buildCats();
+$('filePick').addEventListener('change',e=>{enqueue(e.target.files);e.target.value='';});
+$('dirPick').addEventListener('change',e=>{enqueue(e.target.files);e.target.value='';});
 $('search').addEventListener('keydown',e=>{if(e.key==='Enter')render();});
 $('emp-filter').addEventListener('change',render);
 const drop=$('drop');
 ['dragenter','dragover'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('over');}));
 ['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('over');}));
-drop.addEventListener('drop',e=>{if(e.dataTransfer.files.length)handleFiles(e.dataTransfer.files);});
+drop.addEventListener('drop',e=>{if(e.dataTransfer.files.length)enqueue(e.dataTransfer.files);});
 drop.addEventListener('click',()=>$('filePick').click());
 if(typeof Tesseract==='undefined'){
   log('[!] Не удалось загрузить движок OCR. Проверьте интернет-соединение и перезагрузите страницу.','danger');
