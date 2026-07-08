@@ -324,6 +324,86 @@ def tesseract_check():
         return {'ok': False, 'error': str(e)}
 
 
+def _build_snippet(text: str, terms: list, width: int = 60) -> str:
+    """Return a short excerpt of `text` around the first matched term."""
+    low = text.lower()
+    pos = -1
+    for t in terms:
+        p = low.find(t.lower())
+        if p != -1 and (pos == -1 or p < pos):
+            pos = p
+    if pos == -1:
+        return text[:width * 2].replace('\n', ' ').strip()
+    start = max(0, pos - width)
+    end = min(len(text), pos + width)
+    snippet = text[start:end].replace('\n', ' ').strip()
+    if start > 0:
+        snippet = '…' + snippet
+    if end < len(text):
+        snippet = snippet + '…'
+    return snippet
+
+
+@app.get('/api/search')
+def search(q: str = Query(...), limit: int = Query(default=200)):
+    """Search OCR text of processed screenshots for one or more terms.
+    Multiple terms (variants) are separated by comma — any match counts."""
+    terms = [t.strip() for t in q.split(',') if t.strip()]
+    if not terms:
+        return {'ok': False, 'error': 'Пустой запрос', 'results': [], 'total': 0}
+    rows = db.search_screenshots(terms, limit=limit)
+    low_terms = [t.lower() for t in terms]
+    results = []
+    for r in rows:
+        text = r.get('ocr_text') or ''
+        low = text.lower()
+        matched = [t for t, lt in zip(terms, low_terms) if lt in low]
+        employee, department = an._extract_employee(r['filename'])
+        results.append({
+            'filename':       r['filename'],
+            'employee':       employee,
+            'department':     department,
+            'processed_at':   r['processed_at'],
+            'has_violations': bool(r['has_violations']),
+            'matched':        matched,
+            'snippet':        _build_snippet(text, terms),
+        })
+    return {'ok': True, 'terms': terms, 'total': len(results), 'results': results}
+
+
+@app.get('/api/export')
+def export(format: str = Query(default='csv')):
+    """Download all incidents as CSV or JSON — what was found and where."""
+    import csv
+    import io
+    from datetime import datetime
+    from fastapi.responses import Response, JSONResponse
+
+    incidents = db.get_all_incidents_for_export()
+    stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+    if format == 'json':
+        return JSONResponse(
+            content=incidents,
+            headers={'Content-Disposition': f'attachment; filename="dlp_export_{stamp}.json"'},
+        )
+
+    buf = io.StringIO()
+    buf.write('﻿')  # BOM so Excel reads UTF-8 (Cyrillic) correctly
+    writer = csv.writer(buf, delimiter=';')
+    writer.writerow(['#', 'Время', 'Сотрудник', 'Отдел', 'Тип нарушения', 'Уровень', 'Что найдено', 'Файл'])
+    for inc in incidents:
+        writer.writerow([
+            inc['id'], inc['detected_at'], inc['employee'], inc['department'],
+            inc['violation_type'], inc['severity'], inc['detail'], inc['filename'],
+        ])
+    return Response(
+        content=buf.getvalue(),
+        media_type='text/csv; charset=utf-8',
+        headers={'Content-Disposition': f'attachment; filename="dlp_export_{stamp}.csv"'},
+    )
+
+
 if __name__ == '__main__':
     import uvicorn
     uvicorn.run('main:app', host='127.0.0.1', port=8000, reload=False)

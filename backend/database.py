@@ -145,6 +145,38 @@ def get_violation_types() -> list:
     return [dict(r) for r in rows]
 
 
+def search_screenshots(terms: list, limit: int = 200) -> list:
+    """Find screenshots whose OCR text contains ANY of the given terms
+    (case-insensitive). Returns raw rows incl. ocr_text for snippet building."""
+    if not terms:
+        return []
+    conn = get_conn()
+    clauses = " OR ".join("LOWER(ocr_text) LIKE ?" for _ in terms)
+    params = ['%' + t.lower() + '%' for t in terms]
+    params.append(limit)
+    q = (
+        "SELECT id, filename, path, processed_at, has_violations, ocr_text "
+        "FROM screenshots WHERE (" + clauses + ") ORDER BY id DESC LIMIT ?"
+    )
+    rows = [dict(r) for r in conn.execute(q, params).fetchall()]
+    conn.close()
+    return rows
+
+
+def get_all_incidents_for_export() -> list:
+    """Full incident list joined with screenshot filename, for export."""
+    conn = get_conn()
+    rows = conn.execute("""
+        SELECT i.id, i.detected_at, i.employee, i.department,
+               i.violation_type, i.severity, i.detail, s.filename
+        FROM incidents i
+        JOIN screenshots s ON s.id = i.screenshot_id
+        ORDER BY i.id DESC
+    """).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def clear_all():
     conn = get_conn()
     conn.executescript("DELETE FROM incidents; DELETE FROM screenshots;")

@@ -225,6 +225,7 @@
   <nav>
     <div class="nav-item active" onclick="show('dashboard',this)"><span class="nav-icon">📊</span><span>Дашборд</span></div>
     <div class="nav-item" onclick="show('incidents',this)"><span class="nav-icon">🚨</span><span>Инциденты</span></div>
+    <div class="nav-item" onclick="show('search',this)"><span class="nav-icon">🔎</span><span>Поиск по тексту</span></div>
     <div class="nav-item" onclick="show('analyze',this)"><span class="nav-icon">🔍</span><span>Анализ</span></div>
     <div class="nav-item" onclick="show('employees',this)"><span class="nav-icon">👥</span><span>Сотрудники</span></div>
     <div class="nav-sep"></div>
@@ -314,12 +315,38 @@
           <option value="Мессенджер / соцсеть">Мессенджер / соцсеть</option>
           <option value="Внешний носитель">Внешний носитель</option>
         </select>
+        <button onclick="exportData('csv')" style="margin-left:auto;background:transparent;border:1px solid var(--border);color:var(--text);padding:9px 16px;border-radius:6px;font-size:13px;cursor:pointer">⤓ Экспорт CSV</button>
+        <button onclick="exportData('json')" style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:9px 16px;border-radius:6px;font-size:13px;cursor:pointer">⤓ JSON</button>
       </div>
       <div class="card">
         <div class="tbl-wrap">
           <table>
             <thead><tr><th>#</th><th>Время</th><th>Сотрудник</th><th>Тип нарушения</th><th>Уровень</th><th>Файл</th><th>Детали</th><th>Просмотр</th></tr></thead>
             <tbody id="incidents-body"><tr><td class="empty-row" colspan="8">Загрузка...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ SEARCH ═══ -->
+    <div class="page" id="page-search">
+      <div class="page-title">Поиск по тексту скриншотов</div>
+      <div class="page-sub">Поиск по распознанному (OCR) тексту всех обработанных скринов. Несколько вариантов слова — через запятую (например: <i>договор, договора, договорам</i>).</div>
+
+      <div class="card">
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+          <input type="text" id="search-input" placeholder="Введите слово или несколько через запятую..."
+                 style="flex:1;min-width:240px" onkeydown="if(event.key==='Enter')runSearch()" />
+          <button class="run-btn" style="margin-right:0" onclick="runSearch()">🔎 Найти</button>
+        </div>
+        <div id="search-summary" style="margin-top:14px;font-size:13px;color:var(--muted)"></div>
+      </div>
+
+      <div class="card">
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Файл</th><th>Сотрудник</th><th>Совпадения</th><th>Фрагмент текста</th><th>Статус</th><th>Просмотр</th></tr></thead>
+            <tbody id="search-body"><tr><td class="empty-row" colspan="6">Введите запрос и нажмите «Найти»</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -602,6 +629,53 @@ async function loadIncidents() {
       </tr>`).join('');
   } catch { document.getElementById('incidents-body').innerHTML = '<tr><td class="empty-row" colspan="7">Ошибка загрузки</td></tr>'; }
 }
+
+/* ── Search by OCR text ── */
+async function runSearch() {
+  const q = document.getElementById('search-input').value.trim();
+  const summary = document.getElementById('search-summary');
+  const tbody = document.getElementById('search-body');
+  if (!q) { summary.textContent = 'Введите слово для поиска'; return; }
+  summary.textContent = 'Поиск...';
+  tbody.innerHTML = '<tr><td class="empty-row" colspan="6">Поиск...</td></tr>';
+  try {
+    const data = await fetch(API + '/api/search?q=' + encodeURIComponent(q)).then(r => r.json());
+    if (!data.ok) { summary.textContent = data.error || 'Ошибка'; tbody.innerHTML = '<tr><td class="empty-row" colspan="6">—</td></tr>'; return; }
+    _searchInc = {};
+    summary.innerHTML = `Найдено скринов: <span style="color:var(--accent);font-weight:600">${data.total}</span> по запросу: ${data.terms.map(t => `<b style="color:var(--text)">${escText(t)}</b>`).join(', ')}`;
+    if (!data.total) { tbody.innerHTML = '<tr><td class="empty-row" colspan="6">Ничего не найдено</td></tr>'; return; }
+    tbody.innerHTML = data.results.map(r => `
+      <tr>
+        <td style="font-size:12px">${escText(r.filename)}</td>
+        <td>${escText(r.employee)}</td>
+        <td>${r.matched.map(m => `<span class="pill low">${escText(m)}</span>`).join(' ')}</td>
+        <td style="color:var(--muted);font-size:12px">${highlight(r.snippet, data.terms)}</td>
+        <td>${r.has_violations ? '<span class="pill high">Есть инциденты</span>' : '<span class="pill low">Чисто</span>'}</td>
+        <td><button class="view-btn" onclick="openPreview('${escHtml(r.filename)}','${r.has_violations ? 'Критический' : 'Низкий'}','Найдено по тексту')">🔍 Файл</button></td>
+      </tr>`).join('');
+  } catch { summary.textContent = 'Ошибка связи с сервером'; tbody.innerHTML = '<tr><td class="empty-row" colspan="6">Ошибка</td></tr>'; }
+}
+
+function escText(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function highlight(text, terms) {
+  let out = escText(text);
+  terms.forEach(t => {
+    if (!t) return;
+    const re = new RegExp('(' + t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
+    out = out.replace(re, '<mark style="background:rgba(79,110,247,.35);color:var(--text);border-radius:3px;padding:0 2px">$1</mark>');
+  });
+  return out;
+}
+
+/* ── Export results ── */
+function exportData(fmt) {
+  window.open(API + '/api/export?format=' + fmt, '_blank');
+}
+
+let _searchInc = {};
 
 /* ── Employees ── */
 async function loadEmployees() {
