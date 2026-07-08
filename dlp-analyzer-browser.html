@@ -285,7 +285,6 @@ const WCH='A-Za-zА-Яа-яЁё0-9_';
 const WB=`(?:(?<![${WCH}])(?=[${WCH}])|(?<=[${WCH}])(?![${WCH}]))`;
 function compile(src){let s=src.replace(/\(\?i\)/g,'');s=s.replace(/\\w/g,`[${WCH}]`);s=s.replace(/\\b/g,WB);return new RegExp(s,'gi');}
 const S={C:'Критический',M:'Средний',L:'Низкий'};
-const cut=(v,a,b)=>v.length>=(a+b)?v.slice(0,a)+'****'+v.slice(-b):v;
 const RAW=[
  ['Банковская карта',String.raw`\b(?:\d[ \-]?){15,16}\b`,S.C,v=>`Карта: ${v.slice(0,4)}****${v.length>=8?v.slice(-4):''}`],
  ['Номер счёта',String.raw`(?i)(?:счёт|счет|р/с|р\.с\.|расчётный)[\s:№]*(\d{20})`,S.C,v=>`Счёт: ${v.slice(0,4)}...${v.slice(-4)}`],
@@ -416,8 +415,10 @@ async function* walkDir(dir,prefix){
     else if(h.kind==='directory')yield* walkDir(h,prefix+name+'/');
   }
 }
+let scanning=false; // guard against overlapping scans on slow/large folders
 async function scanWatch(){
-  if(!watchHandle)return;
+  if(!watchHandle||scanning)return;
+  scanning=true;
   let added=0;
   try{
     for await(const it of walkDir(watchHandle,'')){
@@ -430,8 +431,14 @@ async function scanWatch(){
       queue.push({file,employee:emp});
       added++;
     }
-  }catch(e){log('[watch] ошибка чтения папки: '+(e.message||e),'danger');return;}
-  if(added){log(`[watch] обнаружено новых файлов: ${added}`,'accent');updateControls();play();}
+  }catch(e){log('[watch] ошибка чтения папки: '+(e.message||e),'danger');scanning=false;return;}
+  scanning=false;
+  if(added){
+    log(`[watch] обнаружено новых файлов: ${added}`,'accent');
+    updateControls();
+    if(state==='idle')play(); // don't override a user's pause/stop
+    else if(state==='paused')log('[watch] анализ на паузе — новые файлы ждут «Запустить».','warn');
+  }
 }
 function updateControls(){
   const pending=queue.length-qIndex;
