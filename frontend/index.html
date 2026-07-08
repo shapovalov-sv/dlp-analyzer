@@ -297,6 +297,9 @@
       <div class="page-title">Журнал инцидентов</div>
       <div class="page-sub">Все обнаруженные нарушения политики безопасности</div>
       <div class="filters">
+        <select id="emp-filter" onchange="loadIncidents()">
+          <option value="">Все сотрудники</option>
+        </select>
         <select id="sev-filter" onchange="loadIncidents()">
           <option value="">Все уровни</option>
           <option value="Критический">Критический</option>
@@ -337,6 +340,9 @@
         <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
           <input type="text" id="search-input" placeholder="Введите слово или несколько через запятую..."
                  style="flex:1;min-width:240px" onkeydown="if(event.key==='Enter')runSearch()" />
+          <select id="search-emp-filter" style="width:auto;min-width:180px">
+            <option value="">Все сотрудники</option>
+          </select>
           <button class="run-btn" style="margin-right:0" onclick="runSearch()">🔎 Найти</button>
         </div>
         <div id="search-summary" style="margin-top:14px;font-size:13px;color:var(--muted)"></div>
@@ -357,11 +363,34 @@
       <div class="page-title">Анализ скриншотов</div>
       <div class="page-sub">Локальный пайплайн: OCR (Tesseract) + regex-паттерны + SQLite</div>
 
+      <div class="card">
+        <div class="card-title">Сотрудник и автоматический анализ</div>
+        <div class="form-row" style="margin-bottom:14px">
+          <label>Сотрудник, чьи скрины анализируются</label>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+            <input type="text" id="active-emp-input" placeholder="Например: Иванов И.И. (пусто = по имени файла/папки)"
+                   style="flex:1;min-width:240px" onkeydown="if(event.key==='Enter')setActiveEmployee()" />
+            <button class="save-btn" style="margin-top:0" onclick="setActiveEmployee()">Применить</button>
+          </div>
+          <div style="font-size:12px;color:var(--muted);margin-top:8px">
+            Все новые скрины будут привязаны к этому сотруднику. Если поле пустое — сотрудник берётся из имени
+            подпапки (<i>input/Иванов/…</i>) или из имени файла.
+          </div>
+        </div>
+        <div class="toggle-row" style="border:none;padding-top:0">
+          <div>
+            <div class="toggle-label">Автоматический анализ новых скринов</div>
+            <div class="toggle-sub" id="watch-sub">Папка отслеживается — новые файлы анализируются сразу</div>
+          </div>
+          <label class="switch"><input type="checkbox" id="watch-toggle" checked onchange="toggleWatch()"><span class="slider"></span></label>
+        </div>
+        <div id="watch-feed" style="margin-top:14px;font-size:12px;color:var(--muted)">Автообработанных файлов пока нет.</div>
+      </div>
+
       <div id="input-info" class="info-box">Загрузка информации о папке...</div>
       <div id="tess-warn" style="display:none;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:8px;padding:14px 18px;font-size:13px;margin-bottom:20px;color:#fca5a5">
-        <b>Tesseract не установлен</b> — OCR работать не будет.<br/>
-        Установите в терминале:<br/>
-        <code style="display:block;margin-top:8px;padding:8px;background:var(--bg);border-radius:4px;font-size:12px">/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"<br/>brew install tesseract tesseract-lang</code>
+        <b>Tesseract не установлен</b> — OCR работать не будет. Установите для вашей ОС:<br/>
+        <code style="display:block;margin-top:8px;padding:8px;background:var(--bg);border-radius:4px;font-size:12px">Windows: https://github.com/UB-Mannheim/tesseract/wiki (с русским языком)<br/>macOS:   brew install tesseract tesseract-lang<br/>Ubuntu:  sudo apt install tesseract-ocr tesseract-ocr-rus</code>
       </div>
 
       <div class="two-col">
@@ -403,8 +432,8 @@
       <div class="card">
         <div class="tbl-wrap">
           <table>
-            <thead><tr><th>Сотрудник</th><th>Скринов с инц.</th><th>Критических</th><th>Средних</th><th>Последний инц.</th><th>Риск-оценка</th></tr></thead>
-            <tbody id="emp-body"><tr><td class="empty-row" colspan="6">Загрузка...</td></tr></tbody>
+            <thead><tr><th>Сотрудник</th><th>Всего скринов</th><th>Скринов с инц.</th><th>Критических</th><th>Средних</th><th>Последний инц.</th><th>Риск-оценка</th></tr></thead>
+            <tbody id="emp-body"><tr><td class="empty-row" colspan="7">Загрузка...</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -481,9 +510,11 @@ function show(page, el) {
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById('page-' + page).classList.add('active');
   if (el) el.classList.add('active');
-  if (page === 'incidents')  loadIncidents();
+  if (page === 'incidents')  { populateEmployeeFilters(); loadIncidents(); }
+  if (page === 'search')     populateEmployeeFilters();
   if (page === 'employees')  loadEmployees();
   if (page === 'dashboard')  loadDashboard();
+  if (page === 'analyze')    { loadActiveEmployee(); pollWatch(); }
 }
 
 /* ── API health ── */
@@ -599,9 +630,11 @@ function buildTopEmp(emps) {
 async function loadIncidents() {
   const sev  = document.getElementById('sev-filter').value;
   const type = document.getElementById('type-filter').value;
+  const emp  = document.getElementById('emp-filter').value;
   const params = new URLSearchParams();
   if (sev)  params.set('severity', sev);
   if (type) params.set('type', type);
+  if (emp)  params.set('employee', emp);
   try {
     const data = await fetch(API + '/api/incidents?' + params).then(r => r.json());
     // Build per-file incident cache for modal
@@ -638,8 +671,10 @@ async function runSearch() {
   if (!q) { summary.textContent = 'Введите слово для поиска'; return; }
   summary.textContent = 'Поиск...';
   tbody.innerHTML = '<tr><td class="empty-row" colspan="6">Поиск...</td></tr>';
+  const emp = document.getElementById('search-emp-filter').value;
   try {
-    const data = await fetch(API + '/api/search?q=' + encodeURIComponent(q)).then(r => r.json());
+    const url = API + '/api/search?q=' + encodeURIComponent(q) + (emp ? '&employee=' + encodeURIComponent(emp) : '');
+    const data = await fetch(url).then(r => r.json());
     if (!data.ok) { summary.textContent = data.error || 'Ошибка'; tbody.innerHTML = '<tr><td class="empty-row" colspan="6">—</td></tr>'; return; }
     _searchInc = {};
     summary.innerHTML = `Найдено скринов: <span style="color:var(--accent);font-weight:600">${data.total}</span> по запросу: ${data.terms.map(t => `<b style="color:var(--text)">${escText(t)}</b>`).join(', ')}`;
@@ -672,17 +707,81 @@ function highlight(text, terms) {
 
 /* ── Export results ── */
 function exportData(fmt) {
-  window.open(API + '/api/export?format=' + fmt, '_blank');
+  const emp = document.getElementById('emp-filter').value;
+  window.open(API + '/api/export?format=' + fmt + (emp ? '&employee=' + encodeURIComponent(emp) : ''), '_blank');
 }
 
 let _searchInc = {};
+
+/* ── Employee filters + active employee + folder watch ── */
+async function populateEmployeeFilters() {
+  try {
+    const names = await fetch(API + '/api/employees_list').then(r => r.json());
+    ['emp-filter', 'search-emp-filter'].forEach(id => {
+      const sel = document.getElementById(id);
+      if (!sel) return;
+      const cur = sel.value;
+      sel.innerHTML = '<option value="">Все сотрудники</option>' +
+        names.map(n => `<option value="${escText(n)}">${escText(n)}</option>`).join('');
+      sel.value = cur;
+    });
+  } catch {}
+}
+
+async function setActiveEmployee() {
+  const name = document.getElementById('active-emp-input').value.trim();
+  try {
+    const r = await fetch(API + '/api/employee/active?name=' + encodeURIComponent(name), { method: 'POST' }).then(r => r.json());
+    const sub = document.getElementById('watch-sub');
+    if (r.employee) sub.textContent = `Новые скрины привязываются к: ${r.employee}`;
+    else sub.textContent = 'Сотрудник — по имени подпапки или файла';
+  } catch { alert('Не удалось задать сотрудника'); }
+}
+
+async function toggleWatch() {
+  const on = document.getElementById('watch-toggle').checked;
+  try {
+    await fetch(API + '/api/watch/toggle?enabled=' + on, { method: 'POST' });
+  } catch {}
+}
+
+async function pollWatch() {
+  try {
+    const s = await fetch(API + '/api/watch/status').then(r => r.json());
+    document.getElementById('watch-toggle').checked = s.enabled;
+    const feed = document.getElementById('watch-feed');
+    if (!s.recent.length) {
+      feed.innerHTML = 'Автообработанных файлов пока нет. Добавьте скриншот в папку input/ — он проанализируется автоматически.';
+    } else {
+      feed.innerHTML = `<div style="margin-bottom:6px">Автоматически обработано: <b style="color:var(--accent)">${s.processed_count}</b></div>` +
+        s.recent.slice(0, 8).map(r => {
+          const tag = r.error
+            ? '<span class="pill high">ошибка</span>'
+            : r.incidents > 0
+            ? `<span class="pill med">инцидентов: ${r.incidents}</span>`
+            : '<span class="pill low">чисто</span>';
+          return `<div style="padding:3px 0">${r.at} · <b style="color:var(--text)">${escText(r.employee)}</b> · ${escText(r.filename)} ${tag}</div>`;
+        }).join('');
+    }
+  } catch {}
+}
+
+async function loadActiveEmployee() {
+  try {
+    const r = await fetch(API + '/api/employee/active').then(r => r.json());
+    if (r.employee) {
+      document.getElementById('active-emp-input').value = r.employee;
+      document.getElementById('watch-sub').textContent = `Новые скрины привязываются к: ${r.employee}`;
+    }
+  } catch {}
+}
 
 /* ── Employees ── */
 async function loadEmployees() {
   try {
     const data = await fetch(API + '/api/employees').then(r => r.json());
     const tbody = document.getElementById('emp-body');
-    if (!data.length) { tbody.innerHTML = '<tr><td class="empty-row" colspan="6">Нет данных</td></tr>'; return; }
+    if (!data.length) { tbody.innerHTML = '<tr><td class="empty-row" colspan="7">Нет данных</td></tr>'; return; }
     tbody.innerHTML = data.map(e => {
       const badge = e.risk_score > 50
         ? '<span class="pill high">Высокий</span>'
@@ -690,7 +789,8 @@ async function loadEmployees() {
         ? '<span class="pill med">Средний</span>'
         : '<span class="pill low">Низкий</span>';
       return `<tr>
-        <td>${e.employee}</td>
+        <td>${escText(e.employee)}</td>
+        <td>${e.total_screens}</td>
         <td>${e.screens}</td>
         <td style="color:var(--danger)">${e.high_count}</td>
         <td style="color:var(--warn)">${e.med_count}</td>
@@ -698,7 +798,7 @@ async function loadEmployees() {
         <td>${badge}</td>
       </tr>`;
     }).join('');
-  } catch { document.getElementById('emp-body').innerHTML = '<tr><td class="empty-row" colspan="6">Ошибка загрузки</td></tr>'; }
+  } catch { document.getElementById('emp-body').innerHTML = '<tr><td class="empty-row" colspan="7">Ошибка загрузки</td></tr>'; }
 }
 
 /* ── Input folder info + Tesseract check ── */
@@ -863,7 +963,14 @@ document.addEventListener('keydown', e => {
   await checkApi();
   setInterval(checkApi, 10000);
   await loadInputInfo();
+  await loadActiveEmployee();
   await loadDashboard();
+  // Live feed of auto-analyzed screenshots
+  pollWatch();
+  setInterval(() => {
+    const analyzeOpen = document.getElementById('page-analyze').classList.contains('active');
+    if (analyzeOpen) pollWatch();
+  }, 4000);
 })();
 </script>
 </body>

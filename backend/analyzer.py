@@ -391,7 +391,7 @@ def analyze_file(filepath: str, lang: str = 'rus+eng') -> dict:
         ext = filepath.lower().rsplit('.', 1)[-1]
         if ext not in ('jpg', 'jpeg', 'png', 'tiff', 'tif', 'bmp'):
             with Image.open(filepath) as im:
-                with tempfile.NamedTemporaryFile(suffix='.png', delete=False, dir='/tmp', prefix='dlp_img_') as tf:
+                with tempfile.NamedTemporaryFile(suffix='.png', delete=False, dir=tempfile.gettempdir(), prefix='dlp_img_') as tf:
                     tmp_png = tf.name
                 im.convert('RGB').save(tmp_png, 'PNG')
             img_rgb_path = tmp_png

@@ -35,6 +35,7 @@ FRONTEND_DIR = os.path.join(BASE_DIR, 'frontend')
 
 OCR_LANG     = 'rus+eng'
 FILE_TIMEOUT = 45  # hard deadline per file (seconds)
+WATCH_INTERVAL = 3  # folder-watch poll interval (seconds)
 
 # ── Job state ────────────────────────────────────────────────────────────────
 _lock = threading.RLock()  # reentrant — same thread can acquire multiple times
@@ -52,6 +53,86 @@ _job: dict = {
     'error':     None,
 }
 _stop_event = threading.Event()
+
+# ── Folder watcher state ──────────────────────────────────────────────────────
+_watch_lock = threading.RLock()
+_watch: dict = {
+    'enabled':         True,   # auto-analyze new screenshots
+    'active_employee': '',     # attribute new results to this employee (if set)
+    'processed_count': 0,      # files auto-processed since start
+    'last_scan':       None,   # epoch of last folder scan
+    'recent':          [],     # recent auto-processed items (newest first)
+}
+_pending_sizes: dict = {}      # filepath -> size, to detect files still being copied
+
+
+def _employee_for(filepath: str, active: str) -> str:
+    """Decide which employee a screenshot belongs to.
+    Priority: explicit active employee > subfolder name > filename guess."""
+    if active:
+        return active
+    rel = os.path.relpath(filepath, INPUT_DIR).replace('\\', '/')
+    parts = rel.split('/')
+    if len(parts) > 1 and parts[0] not in ('', '.'):
+        return parts[0]  # input/<employee>/screen.jpg → <employee>
+    emp, _dept = an._extract_employee(os.path.basename(filepath))
+    return emp
+
+
+def _push_watch_event(filename: str, employee: str, result: dict):
+    incidents = len(result.get('incidents', []))
+    with _watch_lock:
+        _watch['processed_count'] += 1
+        _watch['recent'].insert(0, {
+            'filename':  filename,
+            'employee':  employee,
+            'incidents': incidents,
+            'error':     result.get('error'),
+            'at':        time.strftime('%H:%M:%S'),
+        })
+        _watch['recent'] = _watch['recent'][:50]
+
+
+def _watcher_loop():
+    """Poll the input folder; analyze new, fully-copied screenshots automatically."""
+    global _pending_sizes
+    while True:
+        try:
+            with _watch_lock:
+                enabled = _watch['enabled']
+                active  = _watch['active_employee']
+            with _lock:
+                running = _job['running']
+
+            if enabled and not running and os.path.isdir(INPUT_DIR):
+                current = {}
+                for f in an.list_jpeg_files(INPUT_DIR):
+                    name = os.path.basename(f)
+                    if db.is_processed(name):
+                        continue
+                    try:
+                        size = os.path.getsize(f)
+                    except OSError:
+                        continue
+                    # Only process once the file size is stable between two scans
+                    # (avoids reading a screenshot that is still being written).
+                    if _pending_sizes.get(f) == size:
+                        emp = _employee_for(f, active)
+                        try:
+                            result = an.analyze_file(f, OCR_LANG)
+                        except Exception as exc:
+                            result = _make_error_result(f, str(exc))
+                        db.save_result(result, employee=emp)
+                        _push_watch_event(name, emp, result)
+                    else:
+                        current[f] = size  # remember size, revisit next scan
+                _pending_sizes = current
+        except Exception:
+            pass
+        finally:
+            with _watch_lock:
+                _watch['last_scan'] = time.time()
+        time.sleep(WATCH_INTERVAL)
 
 
 def _log(level: str, msg: str):
@@ -102,15 +183,22 @@ def _record_result(result: dict, start: float):
 
 def _run_analysis():
     global _job
-    files = an.list_jpeg_files(INPUT_DIR)
+    # Only new (not-yet-processed) files — auto-watch may have handled some already
+    files = [f for f in an.list_jpeg_files(INPUT_DIR)
+             if not db.is_processed(os.path.basename(f))]
 
     if not files:
-        _log('warn', '[WARN] В папке input/ не найдено файлов')
+        _log('warn', '[WARN] Новых файлов для анализа не найдено (все уже обработаны)')
         with _lock:
             _job['running'] = False
         return
 
+    with _watch_lock:
+        active_employee = _watch['active_employee']
+
     _log('info', f'[INIT] Найдено файлов: {len(files)}')
+    if active_employee:
+        _log('info', f'[INIT] Сотрудник: {active_employee}')
     _log('info', f'[INIT] Язык OCR: {OCR_LANG}')
     _log('info', '[SCAN] Начало обработки...')
 
@@ -137,8 +225,9 @@ def _run_analysis():
                 _kill_tesseract()
                 _log('warn', f'[TIMEOUT] Зависание OCR — принудительная остановка {len(pending)} файлов')
                 for future in list(pending):
-                    result = _make_error_result(future_to_path[future], f'Таймаут {FILE_TIMEOUT}с')
-                    db.save_result(result)
+                    fp = future_to_path[future]
+                    result = _make_error_result(fp, f'Таймаут {FILE_TIMEOUT}с')
+                    db.save_result(result, employee=_employee_for(fp, active_employee))
                     _record_result(result, start)
                 pending.clear()
                 break
@@ -149,7 +238,7 @@ def _run_analysis():
                     result = future.result()
                 except Exception as exc:
                     result = _make_error_result(filepath, str(exc))
-                db.save_result(result)
+                db.save_result(result, employee=_employee_for(filepath, active_employee))
                 _record_result(result, start)
 
         if _stop_event.is_set():
@@ -170,6 +259,7 @@ def _run_analysis():
 async def lifespan(app: FastAPI):
     db.init_db()
     os.makedirs(INPUT_DIR, exist_ok=True)
+    threading.Thread(target=_watcher_loop, daemon=True).start()
     yield
 
 
@@ -205,14 +295,56 @@ def stats():
 def incidents(
     severity: str = Query(default=''),
     vtype:    str = Query(default='', alias='type'),
+    employee: str = Query(default=''),
     limit:    int = Query(default=200),
 ):
-    return db.get_incidents(severity=severity, vtype=vtype, limit=limit)
+    return db.get_incidents(severity=severity, vtype=vtype, employee=employee, limit=limit)
 
 
 @app.get('/api/employees')
 def employees():
     return db.get_employees()
+
+
+@app.get('/api/employees_list')
+def employees_list():
+    """Distinct employee names — for filter dropdowns."""
+    return db.get_employee_names()
+
+
+@app.get('/api/employee/active')
+def get_active_employee():
+    with _watch_lock:
+        return {'employee': _watch['active_employee']}
+
+
+@app.post('/api/employee/active')
+def set_active_employee(name: str = Query(default='')):
+    """Set (or clear) the employee that new screenshots are attributed to."""
+    with _watch_lock:
+        _watch['active_employee'] = name.strip()
+        return {'ok': True, 'employee': _watch['active_employee']}
+
+
+@app.get('/api/watch/status')
+def watch_status():
+    with _watch_lock:
+        return {
+            'enabled':         _watch['enabled'],
+            'active_employee': _watch['active_employee'],
+            'processed_count': _watch['processed_count'],
+            'last_scan':       _watch['last_scan'],
+            'interval':        WATCH_INTERVAL,
+            'recent':          list(_watch['recent']),
+        }
+
+
+@app.post('/api/watch/toggle')
+def watch_toggle(enabled: bool = Query(...)):
+    """Turn automatic folder watching on or off."""
+    with _watch_lock:
+        _watch['enabled'] = enabled
+        return {'ok': True, 'enabled': _watch['enabled']}
 
 
 @app.get('/api/hourly')
@@ -345,24 +477,25 @@ def _build_snippet(text: str, terms: list, width: int = 60) -> str:
 
 
 @app.get('/api/search')
-def search(q: str = Query(...), limit: int = Query(default=200)):
+def search(q: str = Query(...), employee: str = Query(default=''), limit: int = Query(default=200)):
     """Search OCR text of processed screenshots for one or more terms.
-    Multiple terms (variants) are separated by comma — any match counts."""
+    Multiple terms (variants) are separated by comma — any match counts.
+    Optionally restrict the search to a single employee."""
     terms = [t.strip() for t in q.split(',') if t.strip()]
     if not terms:
         return {'ok': False, 'error': 'Пустой запрос', 'results': [], 'total': 0}
-    rows = db.search_screenshots(terms, limit=limit)
+    rows = db.search_screenshots(terms, employee=employee, limit=limit)
     low_terms = [t.lower() for t in terms]
     results = []
     for r in rows:
         text = r.get('ocr_text') or ''
         low = text.lower()
         matched = [t for t, lt in zip(terms, low_terms) if lt in low]
-        employee, department = an._extract_employee(r['filename'])
+        emp = r.get('employee') or 'Неизвестно'
         results.append({
             'filename':       r['filename'],
-            'employee':       employee,
-            'department':     department,
+            'employee':       emp,
+            'department':     '—',
             'processed_at':   r['processed_at'],
             'has_violations': bool(r['has_violations']),
             'matched':        matched,
@@ -372,14 +505,15 @@ def search(q: str = Query(...), limit: int = Query(default=200)):
 
 
 @app.get('/api/export')
-def export(format: str = Query(default='csv')):
-    """Download all incidents as CSV or JSON — what was found and where."""
+def export(format: str = Query(default='csv'), employee: str = Query(default='')):
+    """Download incidents as CSV or JSON — what was found and where.
+    Optionally restrict the export to a single employee."""
     import csv
     import io
     from datetime import datetime
     from fastapi.responses import Response, JSONResponse
 
-    incidents = db.get_all_incidents_for_export()
+    incidents = db.get_all_incidents_for_export(employee=employee)
     stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
     if format == 'json':
