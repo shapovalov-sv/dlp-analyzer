@@ -169,8 +169,10 @@
     <div class="row" style="margin-top:14px">
       <button class="btn ghost" onclick="filePick.click()">📄 Добавить файлы</button>
       <button class="btn ghost" onclick="dirPick.click()">📁 Добавить папку (сотрудника)</button>
+      <button class="btn ghost" id="btn-watch" onclick="watchDir()" style="display:none">👁 Следить за папкой (авто)</button>
       <input type="text" id="emp-manual" placeholder="Сотрудник (если файлы без папки)" style="flex:1;min-width:200px" />
     </div>
+    <div class="muted" id="watchInfo" style="margin-top:8px"></div>
     <input type="file" id="filePick" accept="image/*" multiple hidden />
     <input type="file" id="dirPick" webkitdirectory multiple hidden />
     <div class="ctrl">
@@ -357,12 +359,60 @@ function reanalyzeAll(){
 }
 
 /* ── Queue + Play / Pause / Stop ── */
+const seenKeys=new Set();  // dedup: same file won't be queued/processed twice
+const IMG_RE=/\.(jpe?g|png|bmp|tiff?|webp)$/i;
+function fileKey(file,rel){return (rel||file.webkitRelativePath||file.name)+'|'+file.size;}
+
 function enqueue(files){
-  const imgs=[...files].filter(f=>/\.(jpe?g|png|bmp|tiff?|webp)$/i.test(f.name));
+  const imgs=[...files].filter(f=>IMG_RE.test(f.name));
   if(!imgs.length){alert('Не найдено изображений');return;}
-  for(const f of imgs)queue.push({file:f,employee:empFromPath(f)});
-  log(`В очередь добавлено: ${imgs.length}. Нажмите «Запустить».`,'accent');
+  let added=0;
+  for(const f of imgs){
+    const k=fileKey(f);
+    if(seenKeys.has(k))continue;      // already queued/processed — skip
+    seenKeys.add(k);
+    queue.push({file:f,employee:empFromPath(f)});
+    added++;
+  }
+  const dup=imgs.length-added;
+  if(added)log(`В очередь добавлено: ${added}`+(dup?` (пропущено уже обработанных: ${dup})`:'')+'. Нажмите «Запустить».','accent');
+  else log('Новых файлов нет — все уже обработаны или в очереди.','warn');
   updateControls();
+}
+
+/* ── Live folder watch (Chrome File System Access API) ── */
+let watchHandle=null, watchTimer=null;
+async function watchDir(){
+  if(!window.showDirectoryPicker){alert('Ваш браузер не поддерживает слежение за папкой. Используйте «Добавить папку».');return;}
+  try{watchHandle=await window.showDirectoryPicker();}catch(e){return;} // user cancelled
+  $('watchInfo').textContent='👁 Слежу за папкой: '+watchHandle.name+' (новые файлы анализируются сами)';
+  log(`Включено слежение за папкой «${watchHandle.name}». Новые файлы подхватываются автоматически.`,'accent');
+  await scanWatch();
+  if(watchTimer)clearInterval(watchTimer);
+  watchTimer=setInterval(scanWatch,4000);
+}
+async function* walkDir(dir,prefix){
+  for await(const [name,h] of dir.entries()){
+    if(h.kind==='file'){if(IMG_RE.test(name))yield{handle:h,rel:prefix+name};}
+    else if(h.kind==='directory')yield* walkDir(h,prefix+name+'/');
+  }
+}
+async function scanWatch(){
+  if(!watchHandle)return;
+  let added=0;
+  try{
+    for await(const it of walkDir(watchHandle,'')){
+      const file=await it.handle.getFile();
+      const k=fileKey(file,it.rel);
+      if(seenKeys.has(k))continue;
+      seenKeys.add(k);
+      const parts=it.rel.split('/');
+      const emp=parts.length>1?parts[0]:watchHandle.name; // employee = folder name
+      queue.push({file,employee:emp});
+      added++;
+    }
+  }catch(e){log('[watch] ошибка чтения папки: '+(e.message||e),'danger');return;}
+  if(added){log(`[watch] обнаружено новых файлов: ${added}`,'accent');updateControls();play();}
 }
 function updateControls(){
   const pending=queue.length-qIndex;
@@ -529,6 +579,7 @@ function exportCsv(){
 
 /* ── Wire up ── */
 buildCats();
+if(window.showDirectoryPicker)$('btn-watch').style.display='';  // live watch only where supported
 $('filePick').addEventListener('change',e=>{enqueue(e.target.files);e.target.value='';});
 $('dirPick').addEventListener('change',e=>{enqueue(e.target.files);e.target.value='';});
 $('search').addEventListener('keydown',e=>{if(e.key==='Enter')render();});
