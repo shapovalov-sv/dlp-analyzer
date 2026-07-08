@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 dlp.db
 input/
+processed_log.jsonl
 server.log
 .DS_Store
 *.db-journal

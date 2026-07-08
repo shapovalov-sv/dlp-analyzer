@@ -220,6 +220,20 @@ def get_all_incidents_for_export(employee: str = '') -> list:
     return [dict(r) for r in rows]
 
 
+def delete_after(since: str):
+    """Delete screenshots (and their incidents) processed at/after `since`.
+    Used when reprocessing from a chosen date/time."""
+    conn = get_conn()
+    conn.execute(
+        "DELETE FROM incidents WHERE screenshot_id IN "
+        "(SELECT id FROM screenshots WHERE processed_at >= ?)",
+        (since,),
+    )
+    conn.execute("DELETE FROM screenshots WHERE processed_at >= ?", (since,))
+    conn.commit()
+    conn.close()
+
+
 def clear_all():
     conn = get_conn()
     conn.executescript("DELETE FROM incidents; DELETE FROM screenshots;")

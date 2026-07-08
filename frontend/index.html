@@ -364,19 +364,21 @@
       <div class="page-sub">Локальный пайплайн: OCR (Tesseract) + regex-паттерны + SQLite</div>
 
       <div class="card">
-        <div class="card-title">Сотрудник и автоматический анализ</div>
-        <div class="form-row" style="margin-bottom:14px">
-          <label>Сотрудник, чьи скрины анализируются</label>
-          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-            <input type="text" id="active-emp-input" placeholder="Например: Иванов И.И. (пусто = по имени файла/папки)"
-                   style="flex:1;min-width:240px" onkeydown="if(event.key==='Enter')setActiveEmployee()" />
-            <button class="save-btn" style="margin-top:0" onclick="setActiveEmployee()">Применить</button>
-          </div>
-          <div style="font-size:12px;color:var(--muted);margin-top:8px">
-            Все новые скрины будут привязаны к этому сотруднику. Если поле пустое — сотрудник берётся из имени
-            подпапки (<i>input/Иванов/…</i>) или из имени файла.
-          </div>
+        <div class="card-title">Папка для анализа</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+          <input type="text" id="watch-dir-input" placeholder="Путь к папке со скринами (напр. C:\Users\...\screens или /Users/.../screens)"
+                 style="flex:1;min-width:280px" onkeydown="if(event.key==='Enter')setWatchDir()" />
+          <button class="save-btn" style="margin-top:0" onclick="setWatchDir()">Выбрать</button>
         </div>
+        <div style="font-size:12px;color:var(--muted);margin-top:8px">
+          Отслеживается рекурсивно: если внутрь скопировать целую папку с файлами (или папку сотрудника),
+          её содержимое тоже проанализируется. <b>Имя сотрудника берётся из имени папки</b>, в которой лежит скрин
+          (<i>…/Иванов/screen.jpg → Иванов</i>).
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Сотрудник и автоматический анализ</div>
         <div class="toggle-row" style="border:none;padding-top:0">
           <div>
             <div class="toggle-label">Автоматический анализ новых скринов</div>
@@ -384,7 +386,34 @@
           </div>
           <label class="switch"><input type="checkbox" id="watch-toggle" checked onchange="toggleWatch()"><span class="slider"></span></label>
         </div>
+        <div class="form-row" style="margin:14px 0 0">
+          <label>Сотрудник для файлов в корне папки (необязательно)</label>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+            <input type="text" id="active-emp-input" placeholder="Применяется только к файлам без подпапки"
+                   style="flex:1;min-width:240px" onkeydown="if(event.key==='Enter')setActiveEmployee()" />
+            <button class="save-btn" style="margin-top:0" onclick="setActiveEmployee()">Применить</button>
+          </div>
+          <div style="font-size:12px;color:var(--muted);margin-top:8px">
+            Скрины в подпапках всегда привязываются к имени подпапки. Это поле — запасной вариант
+            для файлов, лежащих прямо в корне отслеживаемой папки.
+          </div>
+        </div>
         <div id="watch-feed" style="margin-top:14px;font-size:12px;color:var(--muted)">Автообработанных файлов пока нет.</div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Журнал обработки и переанализ</div>
+        <div style="font-size:13px;color:var(--muted);margin-bottom:14px">
+          Уже распознано файлов (не будут анализироваться повторно): <b id="proclog-count" style="color:var(--accent)">—</b>
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+          <button onclick="reprocessAll()" style="background:transparent;border:1px solid var(--danger);color:var(--danger);padding:9px 16px;border-radius:6px;font-size:13px;cursor:pointer">↺ Начать заново (всё)</button>
+          <input type="datetime-local" id="reproc-since" style="width:auto" />
+          <button onclick="reprocessFrom()" style="background:transparent;border:1px solid var(--border);color:var(--text);padding:9px 16px;border-radius:6px;font-size:13px;cursor:pointer">↺ Переанализировать с даты</button>
+        </div>
+        <div style="font-size:12px;color:var(--muted);margin-top:8px">
+          «С даты» — заново распознаёт файлы, обработанные в указанный момент и позже; более ранние остаются как есть.
+        </div>
       </div>
 
       <div id="input-info" class="info-box">Загрузка информации о папке...</div>
@@ -514,7 +543,7 @@ function show(page, el) {
   if (page === 'search')     populateEmployeeFilters();
   if (page === 'employees')  loadEmployees();
   if (page === 'dashboard')  loadDashboard();
-  if (page === 'analyze')    { loadActiveEmployee(); pollWatch(); }
+  if (page === 'analyze')    { loadActiveEmployee(); loadWatchDir(); loadProclog(); pollWatch(); }
 }
 
 /* ── API health ── */
@@ -769,11 +798,55 @@ async function pollWatch() {
 async function loadActiveEmployee() {
   try {
     const r = await fetch(API + '/api/employee/active').then(r => r.json());
-    if (r.employee) {
-      document.getElementById('active-emp-input').value = r.employee;
-      document.getElementById('watch-sub').textContent = `Новые скрины привязываются к: ${r.employee}`;
-    }
+    if (r.employee) document.getElementById('active-emp-input').value = r.employee;
   } catch {}
+}
+
+/* ── Watched folder ── */
+async function loadWatchDir() {
+  try {
+    const r = await fetch(API + '/api/watch/dir').then(r => r.json());
+    document.getElementById('watch-dir-input').value = r.dir || '';
+  } catch {}
+}
+
+async function setWatchDir() {
+  const path = document.getElementById('watch-dir-input').value.trim();
+  if (!path) { alert('Укажите путь к папке'); return; }
+  try {
+    const r = await fetch(API + '/api/watch/dir?path=' + encodeURIComponent(path), { method: 'POST' }).then(r => r.json());
+    if (r.ok) { document.getElementById('watch-dir-input').value = r.dir; loadInputInfo(); alert('Папка выбрана:\n' + r.dir); }
+    else alert(r.error || 'Ошибка');
+  } catch { alert('Не удалось задать папку'); }
+}
+
+/* ── Processed-log + reprocess ── */
+async function loadProclog() {
+  try {
+    const r = await fetch(API + '/api/proclog/status').then(r => r.json());
+    document.getElementById('proclog-count').textContent = r.count.toLocaleString('ru');
+  } catch {}
+}
+
+async function reprocessAll() {
+  if (!confirm('Удалить все результаты и журнал, затем проанализировать все файлы заново?')) return;
+  try {
+    const r = await fetch(API + '/api/reprocess?scope=all', { method: 'POST' }).then(r => r.json());
+    if (r.ok) { alert('Запущен полный переанализ.'); loadProclog(); loadDashboard(); }
+    else alert(r.error || 'Ошибка');
+  } catch { alert('Ошибка'); }
+}
+
+async function reprocessFrom() {
+  const raw = document.getElementById('reproc-since').value; // 'YYYY-MM-DDTHH:MM'
+  if (!raw) { alert('Выберите дату и время'); return; }
+  const since = raw.replace('T', ' ') + (raw.length === 16 ? ':00' : '');
+  if (!confirm('Заново распознать файлы, обработанные с ' + since + '?')) return;
+  try {
+    const r = await fetch(API + '/api/reprocess?scope=from&since=' + encodeURIComponent(since), { method: 'POST' }).then(r => r.json());
+    if (r.ok) { alert(`К переанализу помечено файлов: ${r.reprocess}`); loadProclog(); loadDashboard(); }
+    else alert(r.error || 'Ошибка');
+  } catch { alert('Ошибка'); }
 }
 
 /* ── Employees ── */
@@ -969,7 +1042,7 @@ document.addEventListener('keydown', e => {
   pollWatch();
   setInterval(() => {
     const analyzeOpen = document.getElementById('page-analyze').classList.contains('active');
-    if (analyzeOpen) pollWatch();
+    if (analyzeOpen) { pollWatch(); loadProclog(); }
   }, 4000);
 })();
 </script>

@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse
 sys.path.insert(0, os.path.dirname(__file__))
 import database as db
 import analyzer as an
+import proclog
 
 
 def _kill_tesseract():
@@ -57,24 +58,32 @@ _stop_event = threading.Event()
 # ── Folder watcher state ──────────────────────────────────────────────────────
 _watch_lock = threading.RLock()
 _watch: dict = {
-    'enabled':         True,   # auto-analyze new screenshots
-    'active_employee': '',     # attribute new results to this employee (if set)
-    'processed_count': 0,      # files auto-processed since start
-    'last_scan':       None,   # epoch of last folder scan
-    'recent':          [],     # recent auto-processed items (newest first)
+    'enabled':         True,      # auto-analyze new screenshots
+    'dir':             INPUT_DIR,  # folder being watched / analyzed
+    'active_employee': '',        # fallback employee for loose files in the root
+    'processed_count': 0,         # files auto-processed since start
+    'last_scan':       None,      # epoch of last folder scan
+    'recent':          [],        # recent auto-processed items (newest first)
 }
-_pending_sizes: dict = {}      # filepath -> size, to detect files still being copied
+_pending_sizes: dict = {}         # filepath -> size, to detect files still being copied
 
 
-def _employee_for(filepath: str, active: str) -> str:
+def _input_dir() -> str:
+    with _watch_lock:
+        return _watch['dir'] or INPUT_DIR
+
+
+def _employee_for(filepath: str, active: str, root: str) -> str:
     """Decide which employee a screenshot belongs to.
-    Priority: explicit active employee > subfolder name > filename guess."""
-    if active:
-        return active
-    rel = os.path.relpath(filepath, INPUT_DIR).replace('\\', '/')
+    The employee is the name of the (sub)folder that holds the screenshot,
+    e.g. <root>/Иванов/screen.jpg → 'Иванов'. Files lying directly in the
+    root fall back to the active employee, then to a filename guess."""
+    rel = os.path.relpath(filepath, root).replace('\\', '/')
     parts = rel.split('/')
     if len(parts) > 1 and parts[0] not in ('', '.'):
-        return parts[0]  # input/<employee>/screen.jpg → <employee>
+        return parts[0]  # folder name = employee (primary rule)
+    if active:
+        return active
     emp, _dept = an._extract_employee(os.path.basename(filepath))
     return emp
 
@@ -94,36 +103,39 @@ def _push_watch_event(filename: str, employee: str, result: dict):
 
 
 def _watcher_loop():
-    """Poll the input folder; analyze new, fully-copied screenshots automatically."""
+    """Poll the watched folder (recursively) and analyze new, fully-copied
+    screenshots automatically. Whole sub-folders dropped in are picked up too."""
     global _pending_sizes
     while True:
         try:
             with _watch_lock:
                 enabled = _watch['enabled']
                 active  = _watch['active_employee']
+            root = _input_dir()
             with _lock:
                 running = _job['running']
 
-            if enabled and not running and os.path.isdir(INPUT_DIR):
+            if enabled and not running and os.path.isdir(root):
                 current = {}
-                for f in an.list_jpeg_files(INPUT_DIR):
-                    name = os.path.basename(f)
-                    if db.is_processed(name):
+                for f in an.list_jpeg_files(root):     # os.walk → recurses into sub-folders
+                    rel = os.path.relpath(f, root)
+                    if proclog.is_done(rel):
                         continue
                     try:
                         size = os.path.getsize(f)
                     except OSError:
                         continue
                     # Only process once the file size is stable between two scans
-                    # (avoids reading a screenshot that is still being written).
+                    # (avoids reading a screenshot/folder that is still being copied).
                     if _pending_sizes.get(f) == size:
-                        emp = _employee_for(f, active)
+                        emp = _employee_for(f, active, root)
                         try:
                             result = an.analyze_file(f, OCR_LANG)
                         except Exception as exc:
                             result = _make_error_result(f, str(exc))
                         db.save_result(result, employee=emp)
-                        _push_watch_event(name, emp, result)
+                        proclog.mark(rel, f, emp, len(result.get('incidents', [])), result.get('error'))
+                        _push_watch_event(os.path.basename(f), emp, result)
                     else:
                         current[f] = size  # remember size, revisit next scan
                 _pending_sizes = current
@@ -183,9 +195,10 @@ def _record_result(result: dict, start: float):
 
 def _run_analysis():
     global _job
+    root = _input_dir()
     # Only new (not-yet-processed) files — auto-watch may have handled some already
-    files = [f for f in an.list_jpeg_files(INPUT_DIR)
-             if not db.is_processed(os.path.basename(f))]
+    files = [f for f in an.list_jpeg_files(root)
+             if not proclog.is_done(os.path.relpath(f, root))]
 
     if not files:
         _log('warn', '[WARN] Новых файлов для анализа не найдено (все уже обработаны)')
@@ -227,7 +240,9 @@ def _run_analysis():
                 for future in list(pending):
                     fp = future_to_path[future]
                     result = _make_error_result(fp, f'Таймаут {FILE_TIMEOUT}с')
-                    db.save_result(result, employee=_employee_for(fp, active_employee))
+                    emp = _employee_for(fp, active_employee, root)
+                    db.save_result(result, employee=emp)
+                    proclog.mark(os.path.relpath(fp, root), fp, emp, 0, result.get('error'))
                     _record_result(result, start)
                 pending.clear()
                 break
@@ -238,7 +253,10 @@ def _run_analysis():
                     result = future.result()
                 except Exception as exc:
                     result = _make_error_result(filepath, str(exc))
-                db.save_result(result, employee=_employee_for(filepath, active_employee))
+                emp = _employee_for(filepath, active_employee, root)
+                db.save_result(result, employee=emp)
+                proclog.mark(os.path.relpath(filepath, root), filepath, emp,
+                             len(result.get('incidents', [])), result.get('error'))
                 _record_result(result, start)
 
         if _stop_event.is_set():
@@ -258,6 +276,7 @@ def _run_analysis():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db()
+    proclog.load()
     os.makedirs(INPUT_DIR, exist_ok=True)
     threading.Thread(target=_watcher_loop, daemon=True).start()
     yield
@@ -347,6 +366,58 @@ def watch_toggle(enabled: bool = Query(...)):
         return {'ok': True, 'enabled': _watch['enabled']}
 
 
+@app.get('/api/watch/dir')
+def get_watch_dir():
+    return {'dir': _input_dir()}
+
+
+@app.post('/api/watch/dir')
+def set_watch_dir(path: str = Query(...)):
+    """Choose which folder is watched and analyzed."""
+    global _pending_sizes
+    path = os.path.expanduser(path.strip())
+    if not path:
+        return {'ok': False, 'error': 'Пустой путь'}
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError as e:
+        return {'ok': False, 'error': f'Не удалось открыть папку: {e}'}
+    if not os.path.isdir(path):
+        return {'ok': False, 'error': 'Это не папка'}
+    with _watch_lock:
+        _watch['dir'] = os.path.abspath(path)
+        _pending_sizes = {}
+    return {'ok': True, 'dir': _input_dir()}
+
+
+@app.get('/api/proclog/status')
+def proclog_status():
+    return {'count': proclog.count(), 'recent': proclog.recent(50)}
+
+
+@app.post('/api/reprocess')
+def reprocess(scope: str = Query(default='all'), since: str = Query(default='')):
+    """Re-run analysis. scope='all' forgets everything; scope='from' forgets
+    only files processed at/after `since` (a 'YYYY-MM-DD' or
+    'YYYY-MM-DD HH:MM:SS' string). The folder watcher then re-analyzes them."""
+    global _pending_sizes
+    if scope == 'all':
+        db.clear_all()
+        proclog.reset_all()
+        with _watch_lock:
+            _pending_sizes = {}
+        return {'ok': True, 'scope': 'all', 'reprocess': proclog.count()}
+    if scope == 'from':
+        if not since.strip():
+            return {'ok': False, 'error': 'Укажите дату/время (since)'}
+        db.delete_after(since.strip())
+        removed = proclog.reset_from(since.strip())
+        with _watch_lock:
+            _pending_sizes = {}
+        return {'ok': True, 'scope': 'from', 'since': since.strip(), 'reprocess': len(removed)}
+    return {'ok': False, 'error': 'scope должен быть all или from'}
+
+
 @app.get('/api/hourly')
 def hourly():
     return db.get_hourly()
@@ -409,19 +480,21 @@ def clear(force: bool = Query(default=False)):
             if _job['running']:
                 return {'ok': False, 'error': 'Нельзя очистить во время анализа'}
     db.clear_all()
+    proclog.reset_all()
     return {'ok': True}
 
 
 @app.get('/api/input_info')
 def input_info():
-    files = an.list_jpeg_files(INPUT_DIR)
-    return {'folder': INPUT_DIR, 'count': len(files), 'files': [os.path.basename(f) for f in files]}
+    root = _input_dir()
+    files = an.list_jpeg_files(root)
+    return {'folder': root, 'count': len(files), 'files': [os.path.basename(f) for f in files]}
 
 
 @app.get('/api/file')
 def serve_file(filename: str = Query(...)):
-    """Serve an image file from the input directory by filename."""
-    files = an.list_jpeg_files(INPUT_DIR)
+    """Serve an image file from the watched directory by filename."""
+    files = an.list_jpeg_files(_input_dir())
     matched = [f for f in files if os.path.basename(f) == filename]
     if not matched:
         raise HTTPException(status_code=404, detail='Файл не найден')
@@ -431,7 +504,7 @@ def serve_file(filename: str = Query(...)):
 @app.get('/api/ocr_preview')
 def ocr_preview(filename: str = Query(...)):
     """Run OCR on one file and return raw text — for diagnostics."""
-    files = an.list_jpeg_files(INPUT_DIR)
+    files = an.list_jpeg_files(_input_dir())
     matched = [f for f in files if os.path.basename(f) == filename]
     if not matched:
         return {'ok': False, 'error': f'Файл не найден: {filename}'}
