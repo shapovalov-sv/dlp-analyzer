@@ -132,6 +132,18 @@
   .modal-img{overflow:auto;padding:16px;display:flex;justify-content:center;flex:1;min-height:0}
   .modal-img img{max-width:100%;border-radius:4px;border:1px solid var(--border)}
   .modal-f{padding:12px 18px;border-top:1px solid var(--border);display:flex;gap:6px;flex-wrap:wrap}
+  /* Dashboard */
+  .dash{display:grid;grid-template-columns:1.4fr 1fr;gap:18px;margin-bottom:18px}
+  @media(max-width:840px){.dash{grid-template-columns:1fr}}
+  .dash .card{margin-bottom:0}
+  .bar-row{display:flex;align-items:center;gap:10px;margin-bottom:11px;font-size:12px}
+  .bar-label{width:150px;flex-shrink:0;font-family:var(--mono);font-size:11px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .bar-track{flex:1;height:7px;background:var(--surface2);border:1px solid var(--border);border-radius:2px;overflow:hidden}
+  .bar-fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));box-shadow:0 0 10px var(--glow)}
+  .bar-fill.high{background:linear-gradient(90deg,#ff3b5c,#ff8098);box-shadow:0 0 10px rgba(255,59,92,.4)}
+  .bar-fill.med{background:linear-gradient(90deg,#ffb020,#ffce7a);box-shadow:none}
+  .bar-fill.low{background:linear-gradient(90deg,#2ee6a6,#7ff0cc);box-shadow:none}
+  .bar-count{width:34px;text-align:right;font-family:var(--mono);font-size:12px;color:var(--dim)}
 </style>
 </head>
 <body>
@@ -188,6 +200,22 @@
       <div class="stat" style="--c:var(--warn)"><div class="l">Средних</div><div class="v" id="s-med">0</div></div>
       <div class="stat" style="--c:var(--ok)"><div class="l">Низких</div><div class="v" id="s-low">0</div></div>
       <div class="stat" style="--c:var(--ok)"><div class="l">Чистых</div><div class="v" id="s-clean">0</div></div>
+    </div>
+
+    <div class="dash">
+      <div class="card">
+        <div class="card-title">Дашборд · сотрудники</div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Сотрудник</th><th>Скринов</th><th>С инц.</th><th>Крит.</th><th>Сред.</th><th>Низк.</th><th>Риск</th></tr></thead>
+            <tbody id="emp-dash"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Типы нарушений</div>
+        <div id="type-bars"><div class="muted">Нет данных</div></div>
+      </div>
     </div>
 
     <div class="card">
@@ -392,6 +420,49 @@ function updateStats(){
   }
   $('s-total').textContent=results.length;$('s-high').textContent=high;
   $('s-med').textContent=med;$('s-low').textContent=low;$('s-clean').textContent=clean;
+  buildDashboard();
+}
+
+function riskBadge(risk){
+  const cls=risk>50?'high':risk>20?'med':'low';
+  const lbl=risk>50?'Высокий':risk>20?'Средний':'Низкий';
+  return `<span class="pill ${cls}">${lbl} · ${risk}</span>`;
+}
+
+function buildDashboard(){
+  // Per-employee aggregation
+  const map={};
+  for(const r of results){
+    const e=map[r.employee]||(map[r.employee]={emp:r.employee,total:0,flagged:0,high:0,med:0,low:0});
+    e.total++;
+    if(r.incidents.length)e.flagged++;
+    e.high+=r.incidents.filter(x=>x.severity===S.C).length;
+    e.med +=r.incidents.filter(x=>x.severity===S.M).length;
+    e.low +=r.incidents.filter(x=>x.severity===S.L).length;
+  }
+  const emps=Object.values(map).map(e=>({...e,risk:Math.min(100,e.high*20+e.med*5)}))
+    .sort((a,b)=>b.risk-a.risk||b.total-a.total);
+  const tb=$('emp-dash');
+  tb.innerHTML=emps.length?emps.map(e=>`<tr>
+      <td>${esc(e.emp)}</td><td>${e.total}</td><td>${e.flagged}</td>
+      <td style="color:var(--danger)">${e.high||''}</td>
+      <td style="color:var(--warn)">${e.med||''}</td>
+      <td style="color:var(--ok)">${e.low||''}</td>
+      <td>${riskBadge(e.risk)}</td></tr>`).join('')
+    :'<tr><td colspan="7" class="muted" style="text-align:center;padding:20px">Нет данных</td></tr>';
+
+  // Violation-type breakdown
+  const types={};
+  for(const r of results)for(const x of r.incidents)types[x.type]=(types[x.type]||{cnt:0,sev:x.severity}),types[x.type].cnt++,types[x.type].sev=x.severity;
+  const arr=Object.entries(types).sort((a,b)=>b[1].cnt-a[1].cnt);
+  const max=arr.length?Math.max(...arr.map(a=>a[1].cnt)):1;
+  const box=$('type-bars');
+  box.innerHTML=arr.length?arr.slice(0,12).map(([t,o])=>{
+    const cls=o.sev===S.C?'high':o.sev===S.M?'med':'low';
+    return `<div class="bar-row"><span class="bar-label" title="${esc(t)}">${esc(t)}</span>
+      <div class="bar-track"><div class="bar-fill ${cls}" style="width:${Math.round(o.cnt/max*100)}%"></div></div>
+      <span class="bar-count">${o.cnt}</span></div>`;
+  }).join(''):'<div class="muted">Нарушений не обнаружено</div>';
 }
 
 function refreshEmpFilter(){
