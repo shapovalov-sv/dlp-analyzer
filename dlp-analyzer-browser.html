@@ -152,6 +152,10 @@
   .chk input{width:15px;height:15px;accent-color:var(--accent);cursor:pointer}
   .snip{max-width:340px;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .fulltxt{max-height:96px;overflow-y:auto;white-space:pre-wrap;word-break:break-word;min-width:240px;max-width:420px;font-size:11px;line-height:1.5;font-family:var(--mono)}
+  tr.grp td{background:rgba(34,211,238,.08);border-top:1px solid var(--border2);border-bottom:1px solid var(--border);
+    font-family:var(--mono);font-size:12px;font-weight:700;color:var(--accent);letter-spacing:1px;padding:9px 12px}
+  tr.grp:hover td{background:rgba(34,211,238,.08)}
+  .grp-meta{font-weight:400;color:var(--dim);letter-spacing:.3px;margin-left:8px}
 </style>
 </head>
 <body>
@@ -694,6 +698,14 @@ function render(){
     if(terms.length&&!terms.some(t=>r.text.toLowerCase().includes(t)))return false;
     return true;
   });
+  // Group by employee: sort by employee, then by filename
+  list.sort((a,b)=>a.employee.localeCompare(b.employee,'ru')||a.filename.localeCompare(b.filename,'ru'));
+  // Per-employee counters for the group headers (computed over the whole filtered list)
+  const gstat={};
+  for(const r of list){
+    const g=gstat[r.employee]||(gstat[r.employee]={files:0,inc:0});
+    g.files++;g.inc+=r.incidents.length;
+  }
   const size=+$('page-size').value||50;
   const total=list.length;
   const pages=Math.max(1,Math.ceil(total/size));
@@ -703,13 +715,20 @@ function render(){
   const shown=list.slice(start,start+size);
   $('pg-info').textContent=total?`${start+1}–${Math.min(start+size,total)} из ${total}`+(pages>1?` · стр. ${page}/${pages}`:''):'0 записей';
   if(!shown.length){rows.innerHTML='<tr><td colspan="5" class="muted" style="text-align:center;padding:26px">Ничего не найдено</td></tr>';return;}
+  let prevEmp=null;
   rows.innerHTML=shown.map(r=>{
     const idx=results.indexOf(r);
     const finds=r.incidents.length?r.incidents.map(x=>`<span class="pill ${pillCls(x.severity)}" title="${esc(x.detail)}">${esc(x.type)}</span>`).join(' '):'<span class="pill low">чисто</span>';
     // Full recognized text (matches the CSV column), highlighted and scrollable
     let full=esc((r.text||'').trim());
     terms.forEach(t=>{if(t){const re=new RegExp('('+t.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','gi');full=full.replace(re,'<mark>$1</mark>');}});
-    return `<tr><td>${esc(r.filename)}</td><td>${esc(r.employee)}</td><td>${finds}</td><td class="muted"><div class="fulltxt">${full||'—'}</div></td><td><button class="view-btn" onclick="openFile(${idx})">🔍 Открыть</button></td></tr>`;
+    let head='';
+    if(r.employee!==prevEmp){  // group header when the employee changes
+      prevEmp=r.employee;
+      const g=gstat[r.employee];
+      head=`<tr class="grp"><td colspan="5">👤 ${esc(r.employee)} <span class="grp-meta">файлов: ${g.files} · инцидентов: ${g.inc}</span></td></tr>`;
+    }
+    return head+`<tr><td>${esc(r.filename)}</td><td>${esc(r.employee)}</td><td>${finds}</td><td class="muted"><div class="fulltxt">${full||'—'}</div></td><td><button class="view-btn" onclick="openFile(${idx})">🔍 Открыть</button></td></tr>`;
   }).join('');
 }
 
