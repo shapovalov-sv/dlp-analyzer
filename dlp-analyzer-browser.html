@@ -186,9 +186,6 @@
       <button class="btn ghost" id="btn-watch" onclick="watchDir()" style="display:none">👁 Следить за папкой (авто)</button>
       <input type="text" id="emp-manual" placeholder="Сотрудник (если файлы без папки)" style="flex:1;min-width:200px" />
     </div>
-    <div class="row" style="margin-top:10px">
-      <input type="text" id="notify-email" placeholder="Email для уведомления о завершении (откроется письмо в почтовике)" style="flex:1;min-width:280px" />
-    </div>
     <div class="muted" id="watchInfo" style="margin-top:8px"></div>
     <input type="file" id="filePick" accept="image/*" multiple hidden />
     <input type="file" id="dirPick" webkitdirectory multiple hidden />
@@ -587,10 +584,10 @@ async function play(){
   updateControls();
 }
 
-/* ── End-of-run: save CSV into the watched folder + email notification ── */
+/* ── End-of-run: save CSV into the watched folder ── */
 async function finishRun(){
-  // 1) CSV with results goes into the watched folder (needs the watch mode,
-  //    where the browser has write permission); otherwise offer a download.
+  // CSV with results goes into the watched folder (needs the watch mode,
+  // where the browser has write permission); otherwise use the export button.
   if(watchHandle){
     try{
       const name='dlp_results_'+new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')+'.csv';
@@ -598,18 +595,8 @@ async function finishRun(){
       const w=await fh.createWritable();
       await w.write(new Blob([buildCsv()],{type:'text/csv;charset=utf-8'}));
       await w.close();
-      seenKeys.add(name+'|csv'); // make sure the watcher never tries to OCR our own report
       log(`Итоговый CSV сохранён в папку: ${name}`,'ok');
     }catch(e){log('Не удалось сохранить CSV в папку: '+(e.message||e),'danger');}
-  }
-  // 2) Email notification: a static page can't send mail by itself, so we
-  //    open a pre-filled message in the user's mail client.
-  const addr=($('notify-email').value||'').trim();
-  if(addr){
-    const st={t:$('s-total').textContent,h:$('s-high').textContent,m:$('s-med').textContent,l:$('s-low').textContent,c:$('s-clean').textContent};
-    const body=`DLP Analyzer: анализ завершён.\n\nОбработано скринов: ${st.t}\nКритических: ${st.h}\nСредних: ${st.m}\nНизких: ${st.l}\nЧистых: ${st.c}\n\nCSV с результатами ${watchHandle?'сохранён в папку анализа':'можно выгрузить кнопкой «Экспорт CSV»'}.`;
-    window.open(`mailto:${encodeURIComponent(addr)}?subject=${encodeURIComponent('DLP Analyzer: анализ завершён')}&body=${encodeURIComponent(body)}`);
-    log(`Открыто письмо-уведомление для ${addr} — нажмите «Отправить» в почтовике.`,'accent');
   }
 }
 function pauseRun(){
