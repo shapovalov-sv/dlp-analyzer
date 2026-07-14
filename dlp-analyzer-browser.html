@@ -153,8 +153,10 @@
   .snip{max-width:340px;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .fulltxt{max-height:96px;overflow-y:auto;white-space:pre-wrap;word-break:break-word;min-width:240px;max-width:420px;font-size:11px;line-height:1.5;font-family:var(--mono)}
   tr.grp td{background:rgba(34,211,238,.08);border-top:1px solid var(--border2);border-bottom:1px solid var(--border);
-    font-family:var(--mono);font-size:12px;font-weight:700;color:var(--accent);letter-spacing:1px;padding:9px 12px}
-  tr.grp:hover td{background:rgba(34,211,238,.08)}
+    font-family:var(--mono);font-size:12px;font-weight:700;color:var(--accent);letter-spacing:1px;padding:9px 12px;cursor:pointer;user-select:none}
+  tr.grp:hover td{background:rgba(34,211,238,.13)}
+  .grp-tgl{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border:1px solid var(--border2);
+    border-radius:3px;margin-right:4px;font-size:13px;line-height:1;vertical-align:-3px}
   .grp-meta{font-weight:400;color:var(--dim);letter-spacing:.3px;margin-left:8px}
 </style>
 </head>
@@ -351,7 +353,7 @@ let state='idle';  // idle | running | paused
 let page=1;        // current page in the incidents table
 const $=id=>document.getElementById(id);
 function log(msg,cls){const b=$('log');if(b.querySelector('.muted'))b.innerHTML='';const d=document.createElement('div');if(cls)d.style.color=`var(--${cls})`;d.textContent=msg;b.appendChild(d);b.scrollTop=b.scrollHeight;}
-function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 const DATE_DIR=/^\d{1,4}[-._ ]\d{1,2}([-._ ]\d{1,4})?$|^\d{6,8}$/; // 2026-07-08, 08.07.2026, 20260708…
 function empFromRel(rel){
   // Structure: <root(HS)>/<employee>/<date>/shot.png.
@@ -683,6 +685,12 @@ function refreshEmpFilter(){
 
 function pillCls(sev){return sev===S.C?'high':sev===S.M?'med':'low';}
 
+const collapsedGrps=new Set(); // employees whose group is collapsed in the table
+function toggleGrp(name){
+  if(collapsedGrps.has(name))collapsedGrps.delete(name);else collapsedGrps.add(name);
+  render();
+}
+
 function pagePrev(){if(page>1){page--;render();}}
 function pageNext(){page++;render();}  // render() clamps to last page
 
@@ -706,29 +714,34 @@ function render(){
     const g=gstat[r.employee]||(gstat[r.employee]={files:0,inc:0});
     g.files++;g.inc+=r.incidents.length;
   }
+  // Build display items: header per employee; rows hidden for collapsed groups
+  const items=[];let pe=null;
+  for(const r of list){
+    if(r.employee!==pe){pe=r.employee;items.push({hdr:pe});}
+    if(!collapsedGrps.has(r.employee))items.push({row:r});
+  }
   const size=+$('page-size').value||50;
-  const total=list.length;
+  const total=items.length;
   const pages=Math.max(1,Math.ceil(total/size));
   if(page>pages)page=pages;
   if(page<1)page=1;
   const start=(page-1)*size;
-  const shown=list.slice(start,start+size);
-  $('pg-info').textContent=total?`${start+1}–${Math.min(start+size,total)} из ${total}`+(pages>1?` · стр. ${page}/${pages}`:''):'0 записей';
+  const shown=items.slice(start,start+size);
+  $('pg-info').textContent=list.length?`файлов: ${list.length}`+(pages>1?` · стр. ${page}/${pages}`:''):'0 записей';
   if(!shown.length){rows.innerHTML='<tr><td colspan="5" class="muted" style="text-align:center;padding:26px">Ничего не найдено</td></tr>';return;}
-  let prevEmp=null;
-  rows.innerHTML=shown.map(r=>{
+  rows.innerHTML=shown.map(it=>{
+    if(it.hdr!==undefined){
+      const g=gstat[it.hdr];
+      const isCol=collapsedGrps.has(it.hdr);
+      return `<tr class="grp" onclick="toggleGrp(this.dataset.emp)" data-emp="${esc(it.hdr)}"><td colspan="5"><span class="grp-tgl">${isCol?'+':'−'}</span> 👤 ${esc(it.hdr)} <span class="grp-meta">файлов: ${g.files} · инцидентов: ${g.inc}${isCol?' · свёрнуто':''}</span></td></tr>`;
+    }
+    const r=it.row;
     const idx=results.indexOf(r);
     const finds=r.incidents.length?r.incidents.map(x=>`<span class="pill ${pillCls(x.severity)}" title="${esc(x.detail)}">${esc(x.type)}</span>`).join(' '):'<span class="pill low">чисто</span>';
     // Full recognized text (matches the CSV column), highlighted and scrollable
     let full=esc((r.text||'').trim());
     terms.forEach(t=>{if(t){const re=new RegExp('('+t.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','gi');full=full.replace(re,'<mark>$1</mark>');}});
-    let head='';
-    if(r.employee!==prevEmp){  // group header when the employee changes
-      prevEmp=r.employee;
-      const g=gstat[r.employee];
-      head=`<tr class="grp"><td colspan="5">👤 ${esc(r.employee)} <span class="grp-meta">файлов: ${g.files} · инцидентов: ${g.inc}</span></td></tr>`;
-    }
-    return head+`<tr><td>${esc(r.filename)}</td><td>${esc(r.employee)}</td><td>${finds}</td><td class="muted"><div class="fulltxt">${full||'—'}</div></td><td><button class="view-btn" onclick="openFile(${idx})">🔍 Открыть</button></td></tr>`;
+    return `<tr><td>${esc(r.filename)}</td><td>${esc(r.employee)}</td><td>${finds}</td><td class="muted"><div class="fulltxt">${full||'—'}</div></td><td><button class="view-btn" onclick="openFile(${idx})">🔍 Открыть</button></td></tr>`;
   }).join('');
 }
 
