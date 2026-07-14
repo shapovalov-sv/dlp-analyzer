@@ -487,9 +487,28 @@ function getSched(){
   })();
   return schedInit;
 }
-function cropCanvas(img,x,w){
-  const c=document.createElement('canvas');c.width=w;c.height=img.height;
-  c.getContext('2d').drawImage(img,x,0,w,img.height,0,0,w,img.height);
+function prepCanvas(img,x,w){
+  // OCR-friendly preprocessing:
+  //  - 2× upscale (small UI text at 1080p is at the edge of recognizability)
+  //  - grayscale
+  //  - invert dark-theme screenshots (OCR expects dark text on light bg)
+  const scale=w<=2200?2:1;
+  const c=document.createElement('canvas');
+  c.width=w*scale;c.height=img.height*scale;
+  const g=c.getContext('2d',{willReadFrequently:true});
+  g.imageSmoothingEnabled=true;g.imageSmoothingQuality='high';
+  g.drawImage(img,x,0,w,img.height,0,0,c.width,c.height);
+  const id=g.getImageData(0,0,c.width,c.height);
+  const d=id.data;
+  let sum=0;
+  for(let i=0;i<d.length;i+=4){
+    const y=(d[i]*299+d[i+1]*587+d[i+2]*114)/1000|0;
+    d[i]=d[i+1]=d[i+2]=y;sum+=y;
+  }
+  if(sum/(d.length/4)<120){ // dark theme → invert to dark-on-light
+    for(let i=0;i<d.length;i+=4){const y=255-d[i];d[i]=d[i+1]=d[i+2]=y;}
+  }
+  g.putImageData(id,0,0);
   return c;
 }
 async function recognizeSmart(file){
@@ -498,11 +517,12 @@ async function recognizeSmart(file){
   try{
     const img=await createImageBitmap(file);
     // Dual-monitor screenshots (e.g. 3840×1080) confuse OCR line detection —
-    // split into per-monitor halves and recognize each separately.
-    if(img.width>=img.height*2&&img.width>=2400){
-      const half=Math.floor(img.width/2);
-      parts=[cropCanvas(img,0,half),cropCanvas(img,half,img.width-half)];
-    }
+    // split into per-monitor halves; each half is preprocessed for OCR.
+    const half=Math.floor(img.width/2);
+    const regions=(img.width>=img.height*2&&img.width>=2400)
+      ? [[0,half],[half,img.width-half]]
+      : [[0,img.width]];
+    parts=regions.map(([x,w])=>prepCanvas(img,x,w));
     img.close&&img.close();
   }catch(e){/* not decodable as image bitmap — let tesseract try the raw file */}
   const texts=await Promise.all(parts.map(pt=>s.addJob('recognize',pt).then(r=>r.data.text||'')));
