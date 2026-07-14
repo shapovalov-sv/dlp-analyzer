@@ -511,6 +511,25 @@ function prepCanvas(img,x,w){
   g.putImageData(id,0,0);
   return c;
 }
+const OCR_MIN_CONF=60; // words below this confidence are photo/wallpaper noise
+function wordOk(t){
+  t=(t||'').trim();
+  if(!t)return false;
+  return /[A-Za-zА-Яа-яЁё0-9@]/.test(t); // must contain letters/digits, not bare punctuation
+}
+function cleanOcr(data){
+  // Desktop wallpapers (photos) produce heaps of low-confidence pseudo-words.
+  // Keep only confident words, drop lines where nothing survived.
+  if(data.lines&&data.lines.length){
+    const out=[];
+    for(const ln of data.lines){
+      const ws=(ln.words||[]).filter(w=>w.confidence>=OCR_MIN_CONF&&wordOk(w.text));
+      if(ws.length)out.push(ws.map(w=>w.text.trim()).join(' '));
+    }
+    return out.join('\n');
+  }
+  return data.text||'';
+}
 async function recognizeSmart(file){
   const s=await getSched();
   let parts=[file];
@@ -525,7 +544,7 @@ async function recognizeSmart(file){
     parts=regions.map(([x,w])=>prepCanvas(img,x,w));
     img.close&&img.close();
   }catch(e){/* not decodable as image bitmap — let tesseract try the raw file */}
-  const texts=await Promise.all(parts.map(pt=>s.addJob('recognize',pt).then(r=>r.data.text||'')));
+  const texts=await Promise.all(parts.map(pt=>s.addJob('recognize',pt).then(r=>cleanOcr(r.data))));
   return texts.join('\n');
 }
 
