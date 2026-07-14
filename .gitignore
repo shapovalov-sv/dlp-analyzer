@@ -1,9 +1,5 @@
+.DS_Store
 .venv/
 __pycache__/
-*.pyc
-dlp.db
-input/
-processed_log.jsonl
-server.log
-.DS_Store
-*.db-journal
+dlp_results_*.csv
+dlp_export_*.csv
