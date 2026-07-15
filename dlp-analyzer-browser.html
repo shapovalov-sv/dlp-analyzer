@@ -188,7 +188,6 @@
       <button class="btn ghost" onclick="filePick.click()">📄 Добавить файлы</button>
       <button class="btn ghost" onclick="dirPick.click()">📁 Добавить папку (сотрудника)</button>
       <button class="btn ghost" id="btn-watch" onclick="watchDir()" style="display:none">👁 Следить за папкой (авто)</button>
-      <input type="text" id="emp-manual" placeholder="Сотрудник (если файлы без папки)" style="flex:1;min-width:200px" />
     </div>
     <div class="muted" id="watchInfo" style="margin-top:8px"></div>
     <input type="file" id="filePick" accept="image/*" multiple hidden />
@@ -362,7 +361,7 @@ function empFromRel(rel){
   // folder is found, fall back to "two levels above the file", then to
   // the first folder, then to the manual field.
   const parts=(rel||'').split('/').filter(Boolean);
-  if(parts.length<2)return ($('emp-manual').value.trim()||'Не задан');
+  if(parts.length<2)return 'Не задан';
   const di=parts.findIndex(p=>DATE_DIR.test(p));
   if(di>0)return parts[di-1];
   if(parts.length>=3)return parts[parts.length-3];
