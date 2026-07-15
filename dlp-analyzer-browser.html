@@ -157,6 +157,10 @@
   tr.grp:hover td{background:rgba(34,211,238,.13)}
   .grp-tgl{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border:1px solid var(--border2);
     border-radius:3px;margin-right:4px;font-size:13px;line-height:1;vertical-align:-3px}
+  tr.sub td{background:rgba(34,211,238,.035);border-bottom:1px solid var(--border);
+    font-family:var(--mono);font-size:11.5px;font-weight:600;color:var(--dim);letter-spacing:.6px;
+    padding:7px 12px 7px 34px;cursor:pointer;user-select:none}
+  tr.sub:hover td{background:rgba(34,211,238,.07)}
   .grp-meta{font-weight:400;color:var(--dim);letter-spacing:.3px;margin-left:8px}
 </style>
 </head>
@@ -365,6 +369,11 @@ function empFromRel(rel){
   return parts[0];
 }
 function empFromPath(file){return empFromRel(file.webkitRelativePath||file.name);}
+function folderFromRel(rel){
+  // Immediate parent folder of the screenshot (usually the date folder)
+  const parts=(rel||'').split('/').filter(Boolean);
+  return parts.length>=2?parts[parts.length-2]:'без папки';
+}
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 
 /* ── Category toggles ── */
@@ -411,7 +420,7 @@ function enqueue(files){
     const k=fileKey(f);
     if(seenKeys.has(k))continue;      // already queued/processed — skip
     seenKeys.add(k);
-    queue.push({file:f,employee:empFromPath(f)});
+    queue.push({file:f,employee:empFromPath(f),folder:folderFromRel(f.webkitRelativePath||f.name)});
     added++;
   }
   const dup=imgs.length-added;
@@ -454,7 +463,7 @@ async function scanWatch(){
     for(const it of found){
       seenKeys.add(it.key);
       const emp=it.rel.includes('/')?empFromRel(it.rel):watchHandle.name;
-      queue.push({file:it.file,employee:emp});
+      queue.push({file:it.file,employee:emp,folder:folderFromRel(it.rel)});
       added++;
     }
   }catch(e){log('[watch] ошибка чтения папки: '+(e.message||e),'danger');scanning=false;return;}
@@ -561,13 +570,13 @@ async function play(){
   log(qIndex>0?`Продолжаю с позиции ${qIndex+1} из ${queue.length}…`:'Запуск анализа…','accent');
   while(qIndex<queue.length){
     if(state!=='running')break;               // paused / stopped → keep qIndex for resume
-    const {file,employee}=queue[qIndex];
+    const {file,employee,folder}=queue[qIndex];
     $('progText').textContent=`Распознаю ${qIndex+1} из ${queue.length}: ${file.name} (${employee})`;
     let text='';
     try{text=await recognizeSmart(file);}
     catch(e){log(`[ERR] ${file.name}: ${e.message||e}`,'danger');}
     const incidents=analyze(text);
-    results.push({filename:file.name,employee,text,incidents,file});
+    results.push({filename:file.name,employee,folder:folder||'без папки',text,incidents,file});
     const sev=incidents.some(x=>x.severity===S.C)?'danger':incidents.length?'warn':'ok';
     log(`[${incidents.length?'НАЙДЕНО':'чисто'}] ${employee} · ${file.name}`+(incidents.length?` → ${incidents.map(x=>x.type).join(', ')}`:''),sev);
     qIndex++;
@@ -673,8 +682,13 @@ function refreshEmpFilter(){
 function pillCls(sev){return sev===S.C?'high':sev===S.M?'med':'low';}
 
 const collapsedGrps=new Set(); // employees whose group is collapsed in the table
+const collapsedSubs=new Set(); // "<employee>›<folder>" sub-groups collapsed
 function toggleGrp(name){
   if(collapsedGrps.has(name))collapsedGrps.delete(name);else collapsedGrps.add(name);
+  render();
+}
+function toggleSub(key){
+  if(collapsedSubs.has(key))collapsedSubs.delete(key);else collapsedSubs.add(key);
   render();
 }
 
@@ -693,19 +707,27 @@ function render(){
     if(terms.length&&!terms.some(t=>r.text.toLowerCase().includes(t)))return false;
     return true;
   });
-  // Group by employee: sort by employee, then by filename
-  list.sort((a,b)=>a.employee.localeCompare(b.employee,'ru')||a.filename.localeCompare(b.filename,'ru'));
-  // Per-employee counters for the group headers (computed over the whole filtered list)
-  const gstat={};
+  // Two-level grouping: employee → source folder → files
+  list.sort((a,b)=>a.employee.localeCompare(b.employee,'ru')
+    ||(a.folder||'').localeCompare(b.folder||'','ru')
+    ||a.filename.localeCompare(b.filename,'ru'));
+  // Counters for group and sub-group headers (over the whole filtered list)
+  const gstat={},fstat={};
   for(const r of list){
     const g=gstat[r.employee]||(gstat[r.employee]={files:0,inc:0});
     g.files++;g.inc+=r.incidents.length;
+    const fk=r.employee+'›'+(r.folder||'без папки');
+    const f=fstat[fk]||(fstat[fk]={files:0,inc:0});
+    f.files++;f.inc+=r.incidents.length;
   }
-  // Build display items: header per employee; rows hidden for collapsed groups
-  const items=[];let pe=null;
+  // Build display items: employee header → folder sub-header → rows
+  const items=[];let pe=null,pf=null;
   for(const r of list){
-    if(r.employee!==pe){pe=r.employee;items.push({hdr:pe});}
-    if(!collapsedGrps.has(r.employee))items.push({row:r});
+    if(r.employee!==pe){pe=r.employee;pf=null;items.push({hdr:pe});}
+    if(collapsedGrps.has(r.employee))continue;          // employee collapsed → hide folders and files
+    const fld=r.folder||'без папки';
+    if(fld!==pf){pf=fld;items.push({sub:{emp:r.employee,folder:fld}});}
+    if(!collapsedSubs.has(r.employee+'›'+fld))items.push({row:r});
   }
   const size=+$('page-size').value||50;
   const total=items.length;
@@ -721,6 +743,12 @@ function render(){
       const g=gstat[it.hdr];
       const isCol=collapsedGrps.has(it.hdr);
       return `<tr class="grp" onclick="toggleGrp(this.dataset.emp)" data-emp="${esc(it.hdr)}"><td colspan="5"><span class="grp-tgl">${isCol?'+':'−'}</span> 👤 ${esc(it.hdr)} <span class="grp-meta">файлов: ${g.files} · инцидентов: ${g.inc}${isCol?' · свёрнуто':''}</span></td></tr>`;
+    }
+    if(it.sub!==undefined){
+      const key=it.sub.emp+'›'+it.sub.folder;
+      const f=fstat[key];
+      const isCol=collapsedSubs.has(key);
+      return `<tr class="sub" onclick="toggleSub(this.dataset.key)" data-key="${esc(key)}"><td colspan="5"><span class="grp-tgl">${isCol?'+':'−'}</span> 📁 ${esc(it.sub.folder)} <span class="grp-meta">файлов: ${f.files} · инцидентов: ${f.inc}${isCol?' · свёрнуто':''}</span></td></tr>`;
     }
     const r=it.row;
     const idx=results.indexOf(r);
