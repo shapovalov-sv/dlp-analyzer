@@ -129,8 +129,12 @@
   .modal-x{width:32px;height:32px;border-radius:3px;border:1px solid var(--border2);background:transparent;color:var(--accent);
     cursor:pointer;font-size:18px;flex-shrink:0}
   .modal-x:hover{background:rgba(34,211,238,.1)}
-  .modal-img{overflow:auto;padding:16px;display:flex;justify-content:center;flex:1;min-height:0}
-  .modal-img img{max-width:100%;border-radius:4px;border:1px solid var(--border)}
+  .modal-img{overflow:auto;padding:16px;flex:1;min-height:0;cursor:grab}
+  .modal-img.dragging{cursor:grabbing}
+  .modal-img img{max-width:100%;border-radius:4px;border:1px solid var(--border);display:block;margin:0 auto;user-select:none;-webkit-user-drag:none}
+  .modal-img img.zoomed{max-width:none;margin:0}
+  .zoom-ctl{display:flex;align-items:center;gap:6px;flex-shrink:0}
+  .zoom-val{font-family:var(--mono);font-size:11px;color:var(--dim);min-width:74px;text-align:center}
   .modal-f{padding:12px 18px;border-top:1px solid var(--border);display:flex;gap:6px;flex-wrap:wrap}
   /* Dashboard */
   .dash{display:grid;grid-template-columns:1.4fr 1fr;gap:18px;margin-bottom:18px}
@@ -282,9 +286,16 @@
         <div class="fn" id="m-fn"></div>
         <div class="em" id="m-em"></div>
       </div>
+      <div class="zoom-ctl">
+        <button class="view-btn" onclick="zoomBy(1/1.25)" title="Уменьшить">−</button>
+        <span class="zoom-val" id="m-zoom">по ширине</span>
+        <button class="view-btn" onclick="zoomBy(1.25)" title="Увеличить">+</button>
+        <button class="view-btn" onclick="zoomSet(1)" title="Реальный размер">1:1</button>
+        <button class="view-btn" onclick="zoomFit()" title="Вписать по ширине">⤢ по ширине</button>
+      </div>
       <button class="modal-x" onclick="closeModal()">&times;</button>
     </div>
-    <div class="modal-img"><img id="m-img" src="" alt="" /></div>
+    <div class="modal-img" id="m-wrap"><img id="m-img" src="" alt="" /></div>
     <div class="modal-f" id="m-finds"></div>
   </div>
 </div>
@@ -760,17 +771,36 @@ function render(){
 }
 
 /* ── File preview modal (verify what was detected) ── */
-let modalUrl=null;
+let modalUrl=null,zoom=0; // zoom 0 = fit-to-width, otherwise scale of natural size
+function applyZoom(){
+  const img=$('m-img');
+  if(zoom<=0){img.classList.remove('zoomed');img.style.width='';$('m-zoom').textContent='по ширине';return;}
+  img.classList.add('zoomed');
+  img.style.width=(img.naturalWidth*zoom)+'px';
+  $('m-zoom').textContent=Math.round(zoom*100)+'%';
+}
+function zoomSet(z){zoom=Math.min(8,Math.max(0.1,z));applyZoom();}
+function zoomFit(){zoom=0;applyZoom();}
+function zoomBy(f){
+  const img=$('m-img');
+  if(zoom<=0){ // convert current fit scale to explicit zoom, then apply the factor
+    const fitScale=img.clientWidth&&img.naturalWidth?img.clientWidth/img.naturalWidth:1;
+    zoom=fitScale;
+  }
+  zoomSet(zoom*f);
+}
 function openFile(idx){
   const r=results[idx];if(!r)return;
   $('m-fn').textContent=r.filename;
-  $('m-em').textContent='Сотрудник: '+r.employee;
+  $('m-em').textContent='Сотрудник: '+r.employee+(r.folder?' · Папка: '+r.folder:'');
   $('m-finds').innerHTML=r.incidents.length
     ? r.incidents.map(x=>`<span class="pill ${pillCls(x.severity)}">${esc(x.type)}: ${esc(x.detail)}</span>`).join(' ')
     : '<span class="pill low">нарушений не обнаружено</span>';
   if(modalUrl)URL.revokeObjectURL(modalUrl);
   modalUrl=r.file?URL.createObjectURL(r.file):'';
-  $('m-img').src=modalUrl;
+  const img=$('m-img');
+  img.src=modalUrl;
+  zoomFit(); // every open starts fitted to width
   $('overlay').classList.add('open');
 }
 function closeModal(){
@@ -778,6 +808,20 @@ function closeModal(){
   if(modalUrl){URL.revokeObjectURL(modalUrl);modalUrl=null;}
 }
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal();});
+// Mouse-wheel zoom inside the preview
+$('m-wrap').addEventListener('wheel',e=>{
+  e.preventDefault();
+  zoomBy(e.deltaY<0?1.15:1/1.15);
+},{passive:false});
+// Double-click toggles fit ↔ 100%
+$('m-img').addEventListener('dblclick',()=>{zoom<=0?zoomSet(1):zoomFit();});
+// Drag to pan when zoomed in
+(()=>{
+  const wrap=$('m-wrap');let drag=null;
+  wrap.addEventListener('mousedown',e=>{drag={x:e.clientX,y:e.clientY,sl:wrap.scrollLeft,st:wrap.scrollTop};wrap.classList.add('dragging');e.preventDefault();});
+  window.addEventListener('mousemove',e=>{if(!drag)return;wrap.scrollLeft=drag.sl-(e.clientX-drag.x);wrap.scrollTop=drag.st-(e.clientY-drag.y);});
+  window.addEventListener('mouseup',()=>{drag=null;wrap.classList.remove('dragging');});
+})();
 
 function buildCsv(){
   // Mirror the on-screen structure: employee → source folder → files
