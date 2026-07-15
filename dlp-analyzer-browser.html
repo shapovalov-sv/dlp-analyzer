@@ -781,11 +781,35 @@ function closeModal(){
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal();});
 
 function buildCsv(){
-  const rows=[['Файл','Сотрудник','Тип','Уровень','Что найдено','Распознанный текст']];
-  for(const r of results){
+  // Mirror the on-screen structure: employee → source folder → files
+  const sorted=[...results].sort((a,b)=>a.employee.localeCompare(b.employee,'ru')
+    ||(a.folder||'').localeCompare(b.folder||'','ru')
+    ||a.filename.localeCompare(b.filename,'ru'));
+  const gstat={},fstat={};
+  for(const r of sorted){
+    const g=gstat[r.employee]||(gstat[r.employee]={files:0,inc:0});
+    g.files++;g.inc+=r.incidents.length;
+    const fk=r.employee+'›'+(r.folder||'без папки');
+    const f=fstat[fk]||(fstat[fk]={files:0,inc:0});
+    f.files++;f.inc+=r.incidents.length;
+  }
+  const rows=[['Сотрудник','Папка','Файл','Тип','Уровень','Что найдено','Распознанный текст']];
+  let pe=null,pf=null;
+  for(const r of sorted){
+    if(r.employee!==pe){
+      pe=r.employee;pf=null;
+      const g=gstat[pe];
+      rows.push([`СОТРУДНИК: ${pe}`,`файлов: ${g.files}`,`инцидентов: ${g.inc}`,'','','','']);
+    }
+    const fld=r.folder||'без папки';
+    if(fld!==pf){
+      pf=fld;
+      const f=fstat[pe+'›'+fld];
+      rows.push([``,`ПАПКА: ${fld}`,`файлов: ${f.files} · инцидентов: ${f.inc}`,'','','','']);
+    }
     const full=(r.text||'').trim();
-    if(!r.incidents.length){rows.push([r.filename,r.employee,'—','Чисто','',full]);continue;}
-    for(const x of r.incidents)rows.push([r.filename,r.employee,x.type,x.severity,x.detail,full]);
+    if(!r.incidents.length){rows.push([r.employee,fld,r.filename,'—','Чисто','',full]);continue;}
+    for(const x of r.incidents)rows.push([r.employee,fld,r.filename,x.type,x.severity,x.detail,full]);
   }
   return '﻿'+rows.map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(';')).join('\n');
 }
