@@ -161,6 +161,12 @@
   tr.grp:hover td{background:rgba(34,211,238,.13)}
   .grp-tgl{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border:1px solid var(--border2);
     border-radius:3px;margin-right:4px;font-size:13px;line-height:1;vertical-align:-3px}
+  .two-col{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:760px){.two-col{grid-template-columns:1fr}}
+  .dic-lbl{display:block;font-family:var(--mono);font-size:11px;color:var(--accent);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
+  .dic-ta{width:100%;min-height:110px;background:var(--surface2);border:1px solid var(--border);color:var(--text);
+    border-radius:3px;padding:10px 12px;font-family:var(--mono);font-size:12px;line-height:1.6;outline:none;resize:vertical}
+  .dic-ta:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(34,211,238,.12)}
   tr.sub td{background:rgba(34,211,238,.035);border-bottom:1px solid var(--border);
     font-family:var(--mono);font-size:11.5px;font-weight:600;color:var(--dim);letter-spacing:.6px;
     padding:7px 12px 7px 34px;cursor:pointer;user-select:none}
@@ -214,6 +220,27 @@
       <span class="muted" id="catInfo"></span>
     </div>
     <div class="cats" id="cats"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Свой словарь и белый список</div>
+    <div class="two-col">
+      <div>
+        <label class="dic-lbl">Свои ключевые слова <span class="muted">(по одному в строке; ищется по основе слова)</span></label>
+        <textarea id="dic-terms" class="dic-ta" placeholder="Проект «Феникс»&#10;Смирнов&#10;увольн&#10;наш поставщик"></textarea>
+      </div>
+      <div>
+        <label class="dic-lbl">Белый список <span class="muted">(что не считать нарушением — подстроки, по одному в строке)</span></label>
+        <textarea id="dic-white" class="dic-ta" placeholder="corp.local&#10;79001234567&#10;наш-домен.ru"></textarea>
+      </div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button class="btn" onclick="applyDict()">Применить</button>
+      <button class="view-btn" onclick="exportDict()">⤓ Экспорт словаря (JSON)</button>
+      <button class="view-btn" onclick="dicImport.click()">⤒ Импорт словаря</button>
+      <input type="file" id="dicImport" accept="application/json,.json" hidden />
+      <span class="muted" id="dic-info"></span>
+    </div>
   </div>
 
   <div id="results" style="display:none">
@@ -307,22 +334,61 @@ const WCH='A-Za-zА-Яа-яЁё0-9_';
 const WB=`(?:(?<![${WCH}])(?=[${WCH}])|(?<=[${WCH}])(?![${WCH}]))`;
 function compile(src){let s=src.replace(/\(\?i\)/g,'');s=s.replace(/\\w/g,`[${WCH}]`);s=s.replace(/\\b/g,WB);return new RegExp(s,'gi');}
 const S={C:'Критический',M:'Средний',L:'Низкий'};
+
+/* ── Checksum validators (cut false positives from random digit runs) ── */
+function luhn(d){ // bank card
+  if(d.length<13||d.length>19)return false;
+  let sum=0,alt=false;
+  for(let i=d.length-1;i>=0;i--){let n=+d[i];if(alt){n*=2;if(n>9)n-=9;}sum+=n;alt=!alt;}
+  return sum%10===0;
+}
+function innValid(d){
+  const c=(w)=>w.reduce((s,k,i)=>s+k*+d[i],0)%11%10;
+  if(d.length===10)return c([2,4,10,3,5,9,4,6,8])===+d[9];
+  if(d.length===12){
+    const n1=c([7,2,4,10,3,5,9,4,6,8]);
+    const n2=c([3,7,2,4,10,3,5,9,4,6,8]);
+    return n1===+d[10]&&n2===+d[11];
+  }
+  return false;
+}
+function snilsValid(d){
+  if(d.length!==11)return false;
+  if(new Set(d.slice(0,9)).size===1)return false; // 000000000, 111111111…
+  let s=0;for(let i=0;i<9;i++)s+=(9-i)*+d[i];
+  let ctrl=s%101;if(ctrl===100)ctrl=0;
+  return ctrl===+d.slice(9);
+}
+
+/* ── De-obfuscation: undo common OCR / evasion tricks so keyword rules still
+      fire on «0ткат», «к0ррупция», латиница вперемешку с кириллицей и т.п. ── */
+const LOOK={'a':'а','c':'с','e':'е','o':'о','p':'р','x':'х','y':'у','k':'к','m':'м','t':'т','h':'н','b':'в','n':'п','0':'о','3':'з','6':'б','4':'ч'};
+function deobfuscate(text){
+  return text.replace(/[a-z0346]/gi,ch=>LOOK[ch.toLowerCase()]||ch);
+}
+
 const RAW=[
- ['Банковская карта',String.raw`\b(?:\d[ \-]?){15,16}\b`,S.C,v=>`Карта: ${v.slice(0,4)}****${v.length>=8?v.slice(-4):''}`],
+ ['Банковская карта',String.raw`\b(?:\d[ \-]?){13,19}\b`,S.C,v=>`Карта: ${v.slice(0,4)}****${v.length>=8?v.slice(-4):''}`,{validate:luhn}],
  ['Номер счёта',String.raw`(?i)(?:счёт|счет|р/с|р\.с\.|расчётный)[\s:№]*(\d{20})`,S.C,v=>`Счёт: ${v.slice(0,4)}...${v.slice(-4)}`],
- ['СНИЛС',String.raw`\b\d{3}[\-\s]\d{3}[\-\s]\d{3}[\-\s]\d{2}\b`,S.C,v=>`СНИЛС: ${v.slice(0,3)}-***-***`],
- ['Паспорт РФ',String.raw`\b\d{4}\s\d{6}\b`,S.C,v=>`Паспорт: ${v.slice(0,4)} ******`],
+ ['СНИЛС',String.raw`\b\d{3}[\-\s]\d{3}[\-\s]\d{3}[\-\s]\d{2}\b`,S.C,v=>`СНИЛС: ${v.slice(0,3)}-***-***`,{validate:snilsValid}],
+ ['Паспорт РФ',String.raw`(?i)(?:паспорт|серия)[\s:№]*\d{4}\s?\d{6}|\b\d{4}\s\d{6}\b`,S.C,v=>`Паспорт: ${(v.match(/\d{4}/)||[''])[0]} ******`],
+ ['Водительское удостоверение',String.raw`(?i)(?:водительск\w+\s+удостоверени\w+|\bв/у\b)[\s:№]*\d{2}\s?[А-ЯA-Z0-9]{2}\s?\d{6}`,S.M,()=>'Признаки водительского удостоверения'],
+ ['Загранпаспорт',String.raw`(?i)загран\w*[\s:№]*\d{2}\s?\d{7}`,S.M,()=>'Признаки заграничного паспорта'],
  ['Полис ОМС / ДМС',String.raw`(?i)(?:полис|ОМС|ДМС|страховой\s+полис)[\s:№]*(\d{16})`,S.C,v=>`Полис: ${v.slice(0,4)}****${v.slice(-4)}`],
  ['Пароль / секрет',String.raw`(?i)(?:password|пароль|passwd|pwd|secret|token|ключ|кодовое\s+слово)\s*[:=]\s*\S{4,}`,S.C,()=>'Найдена строка с паролем или токеном'],
  ['API-ключ',String.raw`(?i)(?:api[_\-]?key|bearer|authorization|x\-api\-key|access[_\-]?token|private[_\-]?key)\s*[:=]\s*[A-Za-z0-9\-_.+/]{20,}`,S.C,()=>'Найден API-ключ или токен авторизации'],
  ['SSH / PGP ключ',String.raw`-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----`,S.C,()=>'Найден приватный SSH/PGP ключ'],
  ['Криптовалютный кошелёк',String.raw`\b(?:bc1|[13])[a-zA-HJ-NP-Z0-9]{25,39}\b|\b0x[a-fA-F0-9]{40}\b`,S.C,v=>`Крипто-кошелёк: ${v.slice(0,8)}...${v.slice(-4)}`],
  ['БИК банка',String.raw`(?i)(?:БИК|BIK)[\s:]*(\d{9})`,S.C,v=>`БИК: ${v.slice(0,3)}***${v.slice(-3)}`],
- ['Коррупция / взятка',String.raw`(?i)(?:\bвзятк[аиу]\b|\bвзяточни(?:к|чество)\b|\bоткат(?:ы|ов|е|ная)?\b|\bподкуп\b|\bкоррупц(?:ия|ии|ионн)\b|\bкоррупционн\w+|\bдача\s+взятки\b|\bполучение\s+взятки\b|\bзанос\b|\bзаносить\b|\bоткатить\b|\bоткатная\b|\bнезаконное\s+вознаграждение\b)`,S.C,v=>`Коррупция / взятка: «${v.trim()}»`],
- ['Обналичивание / отмывание',String.raw`(?i)(?:\bобнал\b|\bобналич(?:ить|ивание|ка)\b|\bобнальщик\b|\bотмывание\b|\bотмыв(?:ать|ать\s+деньги)\b|\bлегализац(?:ия|ии)\s+(?:доход|денег|средств)\b|\bчёрная\s+касса\b|\bчёрная\s+бухгалтери\b|\bтеневая\s+зарплат\b|\bсерая\s+зарплат\b|\bзарплата\s+в\s+конверте\b|\bнеучтённый\s+нал\b|\bналичка\s+мимо\s+кассы\b|\bдроппер\b|\bдроп(?:-\s*мул)?\b|\bтранзит(?:ная\s+схема)?\b|\bфиктивн\w+\s+(?:сделк|договор|контракт)\b|\bподставн\w+\s+фирм\b|\bоднодневка\b)`,S.C,v=>`Обнал / отмывание: «${v.trim()}»`],
- ['Криминальная активность',String.raw`(?i)(?:\bмошенничество\b|\bхищение\b|\bрастрат[аы]\b|\bвымогательство\b|\bвымогать\b|\bшантаж\b|\bшантажировать\b|\bрейдерств\b|\bкрышевание\b|\bкрышевать\b|\bнаезд\b|\bслить\s+базу\b|\bслить\s+данные\b|\bпробить\s+по\s+базе\b|\bкупить\s+справку\b|\bкупить\s+(?:диплом|права|документ)\b|\bчёрный\s+нал\b|\bналик\b|\bкидалово\b|\bкинуть\s+(?:партнёр|фирм|компани)\b)`,S.C,v=>`Криминальная активность: «${v.trim()}»`],
- ['Уголовный / правовой риск',String.raw`(?i)(?:\bуголовн\w+\s+дел\b|\bст(?:атья|\.)\s*\d+\s*УК\b|\bУК\s+РФ\s+ст\b|\bпривлечь\s+к\s+ответственности\b|\bвозбуждение\s+дела\b|\bследственный\s+комитет\b|\b(?:обыск|выемка)\b|\bследователь\b|\bпод\s+следствием\b|\bпод\s+стражей\b|\bконвертная\s+схема\b)`,S.C,v=>`Уголовный риск: «${v.trim()}»`],
- ['ИНН',String.raw`(?i)ИНН[\s:]*(\d{10,12})`,S.M,v=>`ИНН: ${v.slice(0,4)}******`],
+ ['Коррупция / взятка',String.raw`(?i)(?:\bвзятк[аиу]\b|\bвзяточни(?:к|чество)\b|\bоткат(?:ы|ов|е|ная)?\b|\bподкуп\b|\bкоррупц(?:ия|ии|ионн)\b|\bкоррупционн\w+|\bдача\s+взятки\b|\bполучение\s+взятки\b|\bзанос\b|\bзаносить\b|\bоткатить\b|\bоткатная\b|\bнезаконное\s+вознаграждение\b)`,S.C,v=>`Коррупция / взятка: «${v.trim()}»`,{deob:true}],
+ ['Обналичивание / отмывание',String.raw`(?i)(?:\bобнал\b|\bобналич(?:ить|ивание|ка)\b|\bобнальщик\b|\bотмывание\b|\bотмыв(?:ать|ать\s+деньги)\b|\bлегализац(?:ия|ии)\s+(?:доход|денег|средств)\b|\bчёрная\s+касса\b|\bчёрная\s+бухгалтери\b|\bтеневая\s+зарплат\b|\bсерая\s+зарплат\b|\bзарплата\s+в\s+конверте\b|\bнеучтённый\s+нал\b|\bналичка\s+мимо\s+кассы\b|\bдроппер\b|\bдроп(?:-\s*мул)?\b|\bтранзит(?:ная\s+схема)?\b|\bфиктивн\w+\s+(?:сделк|договор|контракт)\b|\bподставн\w+\s+фирм\b|\bоднодневка\b)`,S.C,v=>`Обнал / отмывание: «${v.trim()}»`,{deob:true}],
+ ['Криминальная активность',String.raw`(?i)(?:\bмошенничество\b|\bхищение\b|\bрастрат[аы]\b|\bвымогательство\b|\bвымогать\b|\bшантаж\b|\bшантажировать\b|\bрейдерств\b|\bкрышевание\b|\bкрышевать\b|\bнаезд\b|\bслить\s+базу\b|\bслить\s+данные\b|\bпробить\s+по\s+базе\b|\bкупить\s+справку\b|\bкупить\s+(?:диплом|права|документ)\b|\bчёрный\s+нал\b|\bналик\b|\bкидалово\b|\bкинуть\s+(?:партнёр|фирм|компани)\b)`,S.C,v=>`Криминальная активность: «${v.trim()}»`,{deob:true}],
+ ['Уголовный / правовой риск',String.raw`(?i)(?:\bуголовн\w+\s+дел\b|\bст(?:атья|\.)\s*\d+\s*УК\b|\bУК\s+РФ\s+ст\b|\bпривлечь\s+к\s+ответственности\b|\bвозбуждение\s+дела\b|\bследственный\s+комитет\b|\b(?:обыск|выемка)\b|\bследователь\b|\bпод\s+следствием\b|\bпод\s+стражей\b|\bконвертная\s+схема\b)`,S.C,v=>`Уголовный риск: «${v.trim()}»`,{deob:true}],
+ ['Слив базы / клиентов',String.raw`(?i)(?:выгруз\w+\s+(?:баз|клиент)|(?:баз[аыу]|клиентск\w+\s+баз\w*)\s+клиент|экспорт\s+(?:crm|базы|клиент)|слить\s+баз\w*|передать\s+баз\w*|скачать\s+(?:всю\s+)?баз\w*|select\s+\*\s+from|выгрузить\s+в\s+excel\s+(?:клиент|баз)|дамп\s+баз\w*)`,S.C,v=>`Слив данных: «${v.trim()}»`,{deob:true}],
+ ['Тендерные риски',String.raw`(?i)(?:заточить\s+тз|тз\s+под\s+(?:поставщик|подрядчик|нас|себя)|согласовать\s+(?:цену\s+)?с\s+поставщиком\s+до|откат\w*\s+по\s+(?:тендер|закупк|контракт)|закупк\w+\s+под\s+(?:своего|нужного)|44[\-\s]?фз|223[\-\s]?фз)`,S.C,v=>`Тендерный риск: «${v.trim()}»`,{deob:true}],
+ ['Поиск работы / увольнение',String.raw`(?i)(?:\bhh\.ru\b|headhunter|superjob|rabota\.ru|zarplata\.ru|\bрезюме\b|\bваканси\w+|\bсобеседовани\w+|\bоффер\b|\bконтроффер\b|увольн\w+|\bухожу\s+из\s+компании\b|\bновое\s+место\s+работы\b|ищу\s+работу)`,S.M,v=>`Поиск работы / увольнение: «${v.trim()}»`,{deob:true}],
+ ['Финансовый документ',String.raw`(?i)(?:платёжн\w+\s+поручени\w+|платежк\w+|счёт\s+на\s+оплату|акт\s+сверки|оборотно[\-\s]сальдов\w+|к/с\s*\d{20}|кбк[\s:]*\d{20})`,S.M,v=>`Финансовый документ: «${v.trim()}»`],
+ ['ИНН',String.raw`(?i)(?:ИНН[\s:]*)?(\d{10}|\d{12})\b`,S.M,v=>`ИНН: ${v.slice(0,4)}******`,{validate:innValid}],
  ['ОГРН / КПП',String.raw`(?i)(?:ОГРН|КПП|ОГРНИП)[\s:]*(\d{9,15})`,S.M,v=>`ОГРН/КПП: ${v.slice(0,4)}...${v.slice(-3)}`],
  ['SWIFT / корр. счёт',String.raw`(?i)(?:SWIFT|свифт)[\s:]*([A-Z]{4}[A-Z]{2}[A-Z0-9]{2}(?:[A-Z0-9]{3})?)`,S.M,v=>`SWIFT-код: ${v}`],
  ['Телефон РФ',String.raw`(?:\+7|8)[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}`,S.M,v=>`Телефон: ${v.slice(0,4)}*****${v.slice(-2)}`],
@@ -339,20 +405,69 @@ const RAW=[
  ['Облачное хранилище',String.raw`(?i)(?:drive\.google\.com|docs\.google\.com|dropbox\.com|onedrive\.live\.com|sharepoint\.com|disk\.yandex\.|cloud\.mail\.ru|mega\.nz|box\.com|icloud\.com|wetransfer\.com)`,S.L,v=>`Облачное хранилище: ${v.trim()}`],
  ['Внешний носитель',String.raw`(?i)(?:usb|флешка|съёмный\s+диск|removable|disk[1-9]|volume[1-9]|\bsdcard\b|\bmicrosd\b)`,S.L,()=>'Признаки подключённого внешнего носителя'],
 ];
-const PATTERNS=RAW.map(([type,src,severity,describe])=>({type,re:compile(src),severity,describe}));
+const PATTERNS=RAW.map(([type,src,severity,describe,opt])=>({type,re:compile(src),severity,describe,validate:opt&&opt.validate,deob:opt&&opt.deob}));
+const COMBO_TYPE='Совокупность признаков'; // synthetic escalation category
 
 const enabledTypes=new Set(PATTERNS.map(p=>p.type)); // all categories on by default
+enabledTypes.add('Свой словарь');enabledTypes.add(COMBO_TYPE);
+
+/* ── User-managed dictionary and whitelist (persisted in localStorage) ── */
+let userTerms=[],userRe=[],whiteList=[];
+function loadDict(){
+  try{
+    const d=JSON.parse(localStorage.getItem('dlp_dict')||'{}');
+    userTerms=Array.isArray(d.terms)?d.terms:[];
+    whiteList=Array.isArray(d.white)?d.white.map(w=>w.toLowerCase()):[];
+  }catch{userTerms=[];whiteList=[];}
+  rebuildUserRe();
+}
+function saveDict(){localStorage.setItem('dlp_dict',JSON.stringify({terms:userTerms,white:whiteList}));}
+function rebuildUserRe(){
+  // Each custom term is matched as a word stem (term + any word-continuation),
+  // so «увольн» also catches увольнение/уволился.
+  userRe=userTerms.filter(Boolean).map(t=>{
+    const esc=t.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+    try{return new RegExp(WB+esc+'[A-Za-zА-Яа-яЁё0-9]*','gi');}catch{return null;}
+  }).filter(Boolean);
+}
+function isWhitelisted(val){
+  const v=String(val).toLowerCase();
+  return whiteList.some(w=>w&&v.includes(w));
+}
 
 function analyze(text){
+  const deob=deobfuscate(text);
   const incidents=[];
   for(const p of PATTERNS){
     if(!enabledTypes.has(p.type))continue;   // skip disabled categories
+    const hay=p.deob?deob:text;
     p.re.lastIndex=0;
-    const m=p.re.exec(text);
-    if(!m)continue;
-    const val=(m[1]!==undefined?m[1]:m[0])||'';
+    let m,val=null;
+    while((m=p.re.exec(hay))){
+      const raw=(m[1]!==undefined?m[1]:m[0])||'';
+      if(p.validate&&!p.validate(raw.replace(/\D/g,''))){ // failed checksum → keep scanning
+        if(p.re.lastIndex<=m.index)p.re.lastIndex=m.index+1;
+        continue;
+      }
+      val=raw;break;
+    }
+    if(val==null)continue;
+    if(isWhitelisted(val))continue;
     let detail;try{detail=p.describe(String(val));}catch{detail='Найдено совпадение';}
     incidents.push({type:p.type,severity:p.severity,detail});
+  }
+  // Custom dictionary
+  if(enabledTypes.has('Свой словарь')){
+    for(const re of userRe){
+      re.lastIndex=0;const m=re.exec(text)||re.exec(deob);
+      if(m&&!isWhitelisted(m[0])){incidents.push({type:'Свой словарь',severity:S.M,detail:`Ключевое слово: «${m[0].trim()}»`});break;}
+    }
+  }
+  // Weighted escalation: many medium hits together are collectively serious
+  if(enabledTypes.has(COMBO_TYPE)){
+    const crit=incidents.filter(x=>x.severity===S.C).length;
+    const med=incidents.filter(x=>x.severity===S.M).length;
+    if(crit===0&&med>=3)incidents.push({type:COMBO_TYPE,severity:S.C,detail:`Эскалация: ${med} признаков среднего уровня на одном кадре`});
   }
   return incidents;
 }
@@ -390,9 +505,12 @@ const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 /* ── Category toggles ── */
 function buildCats(){
   const box=$('cats');
-  box.innerHTML=PATTERNS.map(p=>{
+  const cats=[...PATTERNS.map(p=>({type:p.type,severity:p.severity})),
+    {type:'Свой словарь',severity:S.M},{type:COMBO_TYPE,severity:S.C}];
+  box.innerHTML=cats.map(p=>{
     const sc=p.severity===S.C?'sc-high':p.severity===S.M?'sc-med':'sc-low';
-    return `<span class="cat ${sc}" data-type="${esc(p.type)}" onclick="toggleCat(this)">${esc(p.type)}</span>`;
+    const off=enabledTypes.has(p.type)?'':' off';
+    return `<span class="cat ${sc}${off}" data-type="${esc(p.type)}" onclick="toggleCat(this)">${esc(p.type)}</span>`;
   }).join('');
   updateCatInfo();
 }
@@ -410,11 +528,36 @@ function setAllCats(on){
   });
   updateCatInfo();reanalyzeAll();
 }
-function updateCatInfo(){$('catInfo').textContent=`активно категорий: ${enabledTypes.size} из ${PATTERNS.length}`;}
+function updateCatInfo(){$('catInfo').textContent=`активно категорий: ${enabledTypes.size} из ${PATTERNS.length+2}`;}
 function reanalyzeAll(){
   // Re-run detection on already-recognised text (no repeated OCR)
   for(const r of results)r.incidents=analyze(r.text||'');
   refreshEmpFilter();render();updateStats();
+}
+
+/* ── Custom dictionary / whitelist UI ── */
+function fillDictUI(){$('dic-terms').value=userTerms.join('\n');$('dic-white').value=whiteList.join('\n');updateDictInfo();}
+function updateDictInfo(){$('dic-info').textContent=`слов: ${userTerms.length} · в белом списке: ${whiteList.length}`;}
+function applyDict(){
+  userTerms=$('dic-terms').value.split('\n').map(s=>s.trim()).filter(Boolean);
+  whiteList=$('dic-white').value.split('\n').map(s=>s.trim().toLowerCase()).filter(Boolean);
+  rebuildUserRe();saveDict();updateDictInfo();reanalyzeAll();
+  log(`Словарь применён: ${userTerms.length} слов, ${whiteList.length} в белом списке.`,'ok');
+}
+function exportDict(){
+  const blob=new Blob([JSON.stringify({terms:userTerms,white:whiteList},null,2)],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='dlp_dictionary.json';a.click();
+}
+function importDict(file){
+  const fr=new FileReader();
+  fr.onload=()=>{try{
+    const d=JSON.parse(fr.result);
+    userTerms=Array.isArray(d.terms)?d.terms:userTerms;
+    whiteList=Array.isArray(d.white)?d.white.map(w=>String(w).toLowerCase()):whiteList;
+    rebuildUserRe();saveDict();fillDictUI();reanalyzeAll();
+    log('Словарь импортирован.','ok');
+  }catch(e){alert('Не удалось прочитать файл словаря: '+(e.message||e));}};
+  fr.readAsText(file);
 }
 
 /* ── Queue + Play / Pause / Stop ── */
@@ -939,7 +1082,8 @@ function exportXlsx(){
 }
 
 /* ── Wire up ── */
-buildCats();
+loadDict();buildCats();fillDictUI();
+$('dicImport').addEventListener('change',e=>{if(e.target.files[0])importDict(e.target.files[0]);e.target.value='';});
 if(window.showDirectoryPicker)$('btn-watch').style.display='';  // live watch only where supported
 $('filePick').addEventListener('change',e=>{enqueue(e.target.files);e.target.value='';});
 $('dirPick').addEventListener('change',e=>{enqueue(e.target.files);e.target.value='';});
